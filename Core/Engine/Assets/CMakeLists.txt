@@ -1,0 +1,7 @@
+add_subdirectory(AssetLoader)
+add_subdirectory(AssetManager)
+add_subdirectory(AssetRef)
+add_subdirectory(Base)
+add_subdirectory(Material)
+add_subdirectory(Mesh)
+add_subdirectory(Texture)

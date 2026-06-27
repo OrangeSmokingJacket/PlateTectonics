@@ -1,0 +1,7 @@
+add_subdirectory(Base)
+add_subdirectory(Camera)
+add_subdirectory(MeshRenderer)
+add_subdirectory(Entity)
+add_subdirectory(EntityManager)
+add_subdirectory(Scriptable)
+add_subdirectory(Transform)

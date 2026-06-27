@@ -1,0 +1,5 @@
+add_subdirectory(Application)
+add_subdirectory(Engine)
+add_subdirectory(Filesystem)
+add_subdirectory(Inputs)
+add_subdirectory(Renderer)
