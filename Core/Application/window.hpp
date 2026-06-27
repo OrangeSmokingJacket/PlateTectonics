@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include <glad/glad.h>
+#include <ThirdParty/glad/glad.h>
 #include <GLFW/glfw3.h>
 
 namespace Core {

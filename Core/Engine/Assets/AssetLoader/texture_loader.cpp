@@ -1,6 +1,6 @@
 #include "asset_loader.hpp"
 
-#include <stb/stb_image.h>
+#include <ThirdParty/stb/stb_image.h>
 #include <Core/Engine/Assets/Texture/texture.hpp>
 
 #include <fstream>
