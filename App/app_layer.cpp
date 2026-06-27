@@ -85,6 +85,7 @@ MainLayer::MainLayer()
 }
 
 void MainLayer::Update([[maybe_unused]] float delta_time) {
+    last_delta_time_ = delta_time;
     scene_.GetEntityManager().ApplyChanges();
     HandleInputs();
 
@@ -206,8 +207,14 @@ void MainLayer::HandleInputs() {
     }
 }
 
+void HandleDrawSlice(EulerFluidSim::DrawSlice* target, EulerFluidSim::DrawSlice value) {
+    *target = (*target == value) ? EulerFluidSim::DrawSlice::None : value;
+}
+
 void MainLayer::HandleImGUI() {
     ImGui::Begin("Settings");
+    ImGui::Text("FPS: %.1f", 1.0f / last_delta_time_);
+    ImGui::Text("Frame duration: %.1f ms", last_delta_time_ * 1000.0f);
     if (ImGui::CollapsingHeader("Background")) {
         ImGui::Indent(10.0f);
 
@@ -248,7 +255,7 @@ void MainLayer::HandleImGUI() {
             ImGui::PushID("Temperature_Section");
 
             if (ImGui::Button("Draw Temperature Slice")) {
-                mantle_sim_.draw_slice = EulerFluidSim::DrawSlice::Temperature;
+                HandleDrawSlice(&mantle_sim_.draw_slice, EulerFluidSim::DrawSlice::Temperature);
             }
             if (ImGui::CollapsingHeader("Colors")) {
                 ImGui::ColorPicker3("Coldest", mantle_sim_.min_temperature_color.data(), ImGuiColorEditFlags_PickerHueWheel);
@@ -267,7 +274,7 @@ void MainLayer::HandleImGUI() {
                 ImGui::PushID("Pressure_Section");
 
                 if (ImGui::Button("Draw Pressure Slice")) {
-                    mantle_sim_.draw_slice = EulerFluidSim::DrawSlice::Pressure;
+                    HandleDrawSlice(&mantle_sim_.draw_slice, EulerFluidSim::DrawSlice::Pressure);
                 }
                 if (ImGui::CollapsingHeader("Colors")) {
                     ImGui::ColorPicker3("Min", mantle_sim_.min_pressure_color.data(), ImGuiColorEditFlags_PickerHueWheel);
@@ -282,7 +289,7 @@ void MainLayer::HandleImGUI() {
                 ImGui::PushID("Divergence_Section");
 
                 if (ImGui::Button("Draw Pressure Divergence Slice")) {
-                    mantle_sim_.draw_slice = EulerFluidSim::DrawSlice::PressureDivergence;
+                    HandleDrawSlice(&mantle_sim_.draw_slice, EulerFluidSim::DrawSlice::PressureDivergence);
                 }
                 if (ImGui::CollapsingHeader("Colors")) {
                     ImGui::ColorPicker3("Min", mantle_sim_.min_divergence_color.data(), ImGuiColorEditFlags_PickerHueWheel);

@@ -25,4 +25,6 @@ private:
     EulerFluidSim mantle_sim_;
     // Background Color = #0e1945 -> 14, 25, 69
     Core::Engine::Assets::Color background_color_{14.0f / 255.0f, 25.0f / 255.0f, 69.0f / 255.0f, 1.0f};
+    // store for ImGui display
+    float last_delta_time_ = 1.0f;
 };
