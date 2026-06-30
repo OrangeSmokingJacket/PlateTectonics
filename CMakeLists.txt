@@ -67,7 +67,7 @@ add_subdirectory(Math)
 add_subdirectory(Core)
 add_subdirectory(Utils)
 
-add_executable(${PROJECT_NAME} main.cpp App/app_layer.cpp App/euler_fluid_sim.cpp)
+add_executable(${PROJECT_NAME} main.cpp App/app_layer.cpp App/simulation_domain.cpp App/euler_fluid_sim.cpp)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
         imgui_lib

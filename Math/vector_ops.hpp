@@ -59,8 +59,9 @@ namespace math {
 
     template <typename T, size_t Dimensions> requires(Dimensions > 1)
     [[nodiscard]] constexpr impl::vector<T, Dimensions> best_orthogonal(const impl::vector<T, Dimensions>& input) noexcept {
-        auto index = static_cast<size_t>(
-            std::distance(input.begin(), std::min_element(input.begin(), input.end())));
+        auto index = static_cast<size_t>(std::distance(input.begin(),
+            std::min_element(input.begin(), input.end(),
+                [](const auto& lhs, const auto& rhs){ return std::abs(lhs) < std::abs(rhs); })));
         impl::vector<T, Dimensions> result{};
         result[index] = T{1}; // does not change sign to avoid dealing with unsigned T
         return result;

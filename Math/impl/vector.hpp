@@ -379,20 +379,29 @@ namespace math::impl {
     }
 
     template<typename T, size_t Dimensions>
-    constexpr vector<T, Dimensions>& operator*=(vector<T, Dimensions>& lhs, T val) noexcept {
-        for (size_t i = 0; i < Dimensions; ++i) {
-            lhs[i] *= val;
-        }
-        return lhs;
-    }
-
-    template<typename T, size_t Dimensions>
     constexpr vector<T, Dimensions> operator*(T val, const vector<T, Dimensions>& rhs) noexcept {
         vector<T, Dimensions> result;
         for (size_t i = 0; i < Dimensions; ++i) {
             result[i] = val * rhs[i];
         }
         return result;
+    }
+
+    template<typename T, size_t Dimensions>
+    constexpr vector<T, Dimensions> operator*(const vector<T, Dimensions>& lhs, const vector<T, Dimensions>& rhs) noexcept {
+        vector<T, Dimensions> result;
+        for (size_t i = 0; i < Dimensions; ++i) {
+            result[i] = lhs[i] * rhs[i];
+        }
+        return result;
+    }
+
+    template<typename T, size_t Dimensions>
+    constexpr vector<T, Dimensions>& operator*=(vector<T, Dimensions>& lhs, T val) noexcept {
+        for (size_t i = 0; i < Dimensions; ++i) {
+            lhs[i] *= val;
+        }
+        return lhs;
     }
 
     template<typename T, size_t Dimensions>

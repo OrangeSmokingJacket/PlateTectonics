@@ -180,7 +180,7 @@ void MainLayer::Render() {
 
         pipeline_.BindSlice(mantle_sim_.RenderTexture(),
             // TODO: account for scale
-            math::vec3<float>{mantle_sim_.dimensions.x, mantle_sim_.dimensions.y, mantle_sim_.dimensions.z } / 2.0f,
+            math::vec3<float>{mantle_sim_.full_dimensions.x, mantle_sim_.full_dimensions.y, mantle_sim_.full_dimensions.z } / 2.0f,
             resolution,
             0);
         pipeline_.SetModelMatrix(math::mat4x4<float>::identity());
