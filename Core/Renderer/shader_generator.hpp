@@ -1,7 +1,7 @@
 #pragma once
 
-#include <Core/Filesystem/filesystem.hpp>
 #include <Core/Engine/Assets/Material/material.hpp>
+#include <Core/Filesystem/filesystem.hpp>
 
 namespace Core::ShaderGenerator {
 
@@ -21,6 +21,6 @@ namespace Core::ShaderGenerator {
         Filesystem::buffer_t GenerateVertexShaderHeader(ShaderVariance options);
         Filesystem::buffer_t GenerateFragmentShaderHeader(ShaderVariance options);
 
-    }
+    } // namespace Unlit
 
-}
+} // namespace Core::ShaderGenerator

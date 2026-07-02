@@ -2,10 +2,9 @@
 
 #include "entity_manager.hpp"
 
+#include <Core/Engine/Assets/Base/default_assets.hpp>
 #include <Core/Engine/Components/MeshRenderer/mesh_renderer.hpp>
 #include <Core/Engine/Components/Transform/transform.hpp>
-#include <Core/Engine/Assets/Base/default_assets.hpp>
-
 
 namespace Core::Engine::Assets {
 
@@ -22,7 +21,7 @@ namespace Core::Engine::Assets {
             VertexPosition{0.5f, 0.5f, 0.5f},
         };
 
-        static constexpr std::array edges {
+        static constexpr std::array edges{
             EdgeIndices{0, 1},
             EdgeIndices{0, 2},
             EdgeIndices{2, 3},
@@ -56,7 +55,7 @@ namespace Core::Engine::Assets {
         }
         */
 
-    }
+    } // namespace WireframeCube
 
     namespace ColoredCube {
 
@@ -82,13 +81,19 @@ namespace Core::Engine::Assets {
             VertexColor{uint8_t{0}, uint8_t{255}, uint8_t{0}, uint8_t{255}},
         };
 
-        static constexpr std::array triangles {
-            TriangleIndices{0, 1, 3}, TriangleIndices{1, 2, 3},
-            TriangleIndices{3, 2, 7}, TriangleIndices{2, 6, 7},
-            TriangleIndices{6, 4, 7}, TriangleIndices{6, 5, 4},
-            TriangleIndices{5, 0, 4}, TriangleIndices{5, 1, 0},
-            TriangleIndices{1, 5, 2}, TriangleIndices{2, 5, 6},
-            TriangleIndices{0, 3, 4}, TriangleIndices{4, 3, 7},
+        static constexpr std::array triangles{
+            TriangleIndices{0, 1, 3},
+            TriangleIndices{1, 2, 3},
+            TriangleIndices{3, 2, 7},
+            TriangleIndices{2, 6, 7},
+            TriangleIndices{6, 4, 7},
+            TriangleIndices{6, 5, 4},
+            TriangleIndices{5, 0, 4},
+            TriangleIndices{5, 1, 0},
+            TriangleIndices{1, 5, 2},
+            TriangleIndices{2, 5, 6},
+            TriangleIndices{0, 3, 4},
+            TriangleIndices{4, 3, 7},
         };
 
         // TODO: needs mesh_asset for colored
@@ -111,7 +116,7 @@ namespace Core::Engine::Assets {
         }
         */
 
-    }
+    } // namespace ColoredCube
 
     namespace TexturedCube {
 
@@ -214,23 +219,28 @@ namespace Core::Engine::Assets {
             VertexUV{1.0f, 1.0f},
         };
 
-        static constexpr std::array triangles {
+        static constexpr std::array triangles{
             // Front
-            TriangleIndices{0, 1, 2}, TriangleIndices{1, 3, 2},
+            TriangleIndices{0, 1, 2},
+            TriangleIndices{1, 3, 2},
             // Right
-            TriangleIndices{4, 5, 6}, TriangleIndices{5, 7, 6},
+            TriangleIndices{4, 5, 6},
+            TriangleIndices{5, 7, 6},
             // Back
-            TriangleIndices{8, 9, 10}, TriangleIndices{9, 11, 10},
+            TriangleIndices{8, 9, 10},
+            TriangleIndices{9, 11, 10},
             // Left
-            TriangleIndices{12, 13, 14}, TriangleIndices{13, 15, 14},
+            TriangleIndices{12, 13, 14},
+            TriangleIndices{13, 15, 14},
             // Left
-            TriangleIndices{16, 17, 18}, TriangleIndices{17, 19, 18},
+            TriangleIndices{16, 17, 18},
+            TriangleIndices{17, 19, 18},
             // Bottom
-            TriangleIndices{20, 21, 22}, TriangleIndices{21, 23, 22},
+            TriangleIndices{20, 21, 22},
+            TriangleIndices{21, 23, 22},
         };
 
         inline std::shared_ptr<Entity> ConstructCube(EntityManager* manager) {
-
             AssetRef<Mesh> mesh{DefaultAssets.GetID("CubeUV")};
 
             Unlit_MaterialParameters parameters;
@@ -247,13 +257,11 @@ namespace Core::Engine::Assets {
             auto result = manager->AddEntity();
             result->AddComponent(std::make_unique<Components::Transform>());
             result->AddComponent(
-                std::make_unique<Components::MeshRenderer>(
-                    std::move(mesh), AssetRef<MaterialUnlit>{material_ID}));
+                std::make_unique<Components::MeshRenderer>(std::move(mesh), AssetRef<MaterialUnlit>{material_ID}));
             return result;
         }
 
         inline std::shared_ptr<Entity> ConstructTransparentCube(EntityManager* manager) {
-
             AssetRef<Mesh> mesh{DefaultAssets.GetID("CubeUV")};
 
             Unlit_MaterialParameters parameters;
@@ -272,11 +280,10 @@ namespace Core::Engine::Assets {
             auto result = manager->AddEntity();
             result->AddComponent(std::make_unique<Components::Transform>());
             result->AddComponent(
-                std::make_unique<Components::MeshRenderer>(
-                    std::move(mesh), AssetRef<MaterialUnlit>{material_ID}));
+                std::make_unique<Components::MeshRenderer>(std::move(mesh), AssetRef<MaterialUnlit>{material_ID}));
             return result;
         }
 
-    }
+    } // namespace TexturedCube
 
-}
+} // namespace Core::Engine::Assets

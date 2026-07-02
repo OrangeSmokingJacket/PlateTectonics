@@ -6,7 +6,7 @@
 
 namespace Core::Engine::Components {
 
-    class Camera final : public BaseComponent{
+    class Camera final : public BaseComponent {
     public:
         explicit Camera(float FOV_rads, float near_clip, float far_clip);
 
@@ -23,4 +23,4 @@ namespace Core::Engine::Components {
         // TODO: different perspectives
     };
 
-}
+} // namespace Core::Engine::Components

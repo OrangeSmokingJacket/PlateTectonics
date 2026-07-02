@@ -2,8 +2,11 @@
 
 #include <string>
 
+// order matters here
+// clang-format off
 #include <ThirdParty/glad/glad.h>
 #include <GLFW/glfw3.h>
+// clang-format on
 
 namespace Core {
 
@@ -42,4 +45,4 @@ namespace Core {
         GLFWwindow* glfw_window_ = nullptr;
     };
 
-}
+} // namespace Core

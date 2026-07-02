@@ -13,20 +13,12 @@ namespace Core::Engine::Assets {
 
     template <typename Archive>
     void save(Archive& archive, const MeshData& mesh_data) {
-        archive(mesh_data.positions,
-                mesh_data.normals,
-                mesh_data.tangents,
-                mesh_data.colors,
-                mesh_data.uvs);
+        archive(mesh_data.positions, mesh_data.normals, mesh_data.tangents, mesh_data.colors, mesh_data.uvs);
     }
 
     template <typename Archive>
     void load(Archive& archive, MeshData& mesh_data) {
-        archive(mesh_data.positions,
-                mesh_data.normals,
-                mesh_data.tangents,
-                mesh_data.colors,
-                mesh_data.uvs);
+        archive(mesh_data.positions, mesh_data.normals, mesh_data.tangents, mesh_data.colors, mesh_data.uvs);
     }
 
     template <typename Archive>
@@ -85,4 +77,4 @@ namespace Core::Engine::Assets {
         serializer(asset->mesh_data, asset->elements);
     }
 
-}
+} // namespace Core::Engine::Assets

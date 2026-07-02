@@ -36,8 +36,7 @@ namespace Core {
         other.shader_program_id_ = GL_INVALID_INDEX;
     }
 
-    ShaderProgram& ShaderProgram::operator=(ShaderProgram&& other) noexcept
-    {
+    ShaderProgram& ShaderProgram::operator=(ShaderProgram&& other) noexcept {
         if (shader_program_id_ != GL_INVALID_INDEX) {
             glDeleteProgram(shader_program_id_);
         }
@@ -55,24 +54,14 @@ namespace Core {
         }
     }
 
-    void ShaderProgram::Bind() {
-        glUseProgram(shader_program_id_);
-    }
+    void ShaderProgram::Bind() { glUseProgram(shader_program_id_); }
 
-    void ShaderProgram::Unbind() {
-        glUseProgram(0);
-    }
+    void ShaderProgram::Unbind() { glUseProgram(0); }
 
-    GLuint ShaderProgram::ProgramId() const noexcept {
-        return shader_program_id_;
-    }
+    GLuint ShaderProgram::ProgramId() const noexcept { return shader_program_id_; }
 
-    GLuint ShaderProgram::VertexShaderID() const noexcept {
-        return vertex_shader_->ShaderId();
-    }
+    GLuint ShaderProgram::VertexShaderID() const noexcept { return vertex_shader_->ShaderId(); }
 
-    GLuint ShaderProgram::FragmentShaderID() const noexcept {
-        return fragment_shader_->ShaderId();
-    }
+    GLuint ShaderProgram::FragmentShaderID() const noexcept { return fragment_shader_->ShaderId(); }
 
-}
+} // namespace Core

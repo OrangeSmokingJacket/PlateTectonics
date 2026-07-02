@@ -5,7 +5,7 @@ namespace Core::ShaderGenerator {
     namespace Unlit {
 
         VariantShaderProgram::VariantShaderProgram(const std::filesystem::path& vs_path,
-                                                                           const std::filesystem::path& fs_path)
+                                                   const std::filesystem::path& fs_path)
             : vs_path_(vs_path)
             , fs_path_(fs_path) {}
 
@@ -24,14 +24,16 @@ namespace Core::ShaderGenerator {
                 vs = vs_it->second;
             } else {
                 auto header = GenerateVertexShaderHeader(variance);
-                vs = std::make_shared<VertexShader>(CompileShader<ShaderType::Vertex>(header + Filesystem::ReadFullFile(vs_path_)));
+                vs = std::make_shared<VertexShader>(
+                    CompileShader<ShaderType::Vertex>(header + Filesystem::ReadFullFile(vs_path_)));
                 vs_variants_.emplace(vs_permutation, vs);
             }
             if (auto fs_it = fs_variants_.find(fs_permutation); fs_it != fs_variants_.end()) {
                 fs = fs_it->second;
             } else {
                 auto header = GenerateFragmentShaderHeader(variance);
-                fs = std::make_shared<FragmentShader>(CompileShader<ShaderType::Fragment>(header + Filesystem::ReadFullFile(fs_path_)));
+                fs = std::make_shared<FragmentShader>(
+                    CompileShader<ShaderType::Fragment>(header + Filesystem::ReadFullFile(fs_path_)));
                 fs_variants_.emplace(fs_permutation, fs);
             }
 
@@ -53,9 +55,7 @@ namespace Core::ShaderGenerator {
             return program;
         }
 
-        void VariantShaderProgram::Unbind() const noexcept {
-            ShaderProgram::Unbind();
-        }
-    }
+        void VariantShaderProgram::Unbind() const noexcept { ShaderProgram::Unbind(); }
+    } // namespace Unlit
 
-}
+} // namespace Core::ShaderGenerator

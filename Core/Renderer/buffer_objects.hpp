@@ -1,7 +1,10 @@
 #pragma once
 
+// order matters here
+// clang-format off
 #include <ThirdParty/glad/glad.h>
 #include <GLFW/glfw3.h>
+// clang-format on
 
 #include <cassert>
 #include <utility>
@@ -55,14 +58,14 @@ namespace Core {
     template <BufferObjectType T>
     consteval GLenum EnumFromType() {
         switch (T) {
-        case BufferObjectType::Vertex:
-            return GL_ARRAY_BUFFER;
-        case BufferObjectType::Element:
-            return GL_ELEMENT_ARRAY_BUFFER;
-        case BufferObjectType::Uniform:
-            return GL_UNIFORM_BUFFER;
-        default:
-            return GL_INVALID_ENUM;
+            case BufferObjectType::Vertex:
+                return GL_ARRAY_BUFFER;
+            case BufferObjectType::Element:
+                return GL_ELEMENT_ARRAY_BUFFER;
+            case BufferObjectType::Uniform:
+                return GL_UNIFORM_BUFFER;
+            default:
+                return GL_INVALID_ENUM;
         }
     }
 
@@ -91,7 +94,6 @@ namespace Core {
         uint32_t capacity_;
         GLuint id_ = GL_INVALID_INDEX;
     };
-
 
     template <BufferObjectType T>
     BufferObject<T>::BufferObject(uint32_t capacity)
@@ -134,7 +136,7 @@ namespace Core {
         glBindBufferBase(EnumFromType<T>(), index, id_);
     }
 
-    template<BufferObjectType T>
+    template <BufferObjectType T>
     void BufferObject<T>::Unbind() {
         glBindBuffer(EnumFromType<T>(), 0);
     }
@@ -151,22 +153,22 @@ namespace Core {
         glBufferSubData(EnumFromType<T>(), 0, size, data);
     }
 
-    template<BufferObjectType T>
+    template <BufferObjectType T>
     GLuint BufferObject<T>::CurrentBinding() {
         // glGetIntegerv does not have a unsigned version
         GLint result;
         switch (T) {
-        case BufferObjectType::Vertex:
-            glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &result);
-            break;
-        case BufferObjectType::Element:
-            glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &result);
-            break;
-        case BufferObjectType::Uniform:
-            glGetIntegerv(GL_UNIFORM_BUFFER_BINDING, &result);
-            break;
-        default:
-            assert(false);
+            case BufferObjectType::Vertex:
+                glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &result);
+                break;
+            case BufferObjectType::Element:
+                glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &result);
+                break;
+            case BufferObjectType::Uniform:
+                glGetIntegerv(GL_UNIFORM_BUFFER_BINDING, &result);
+                break;
+            default:
+                assert(false);
         }
         return result;
     }
@@ -175,4 +177,4 @@ namespace Core {
     using ElementBufferObject = BufferObject<BufferObjectType::Element>;
     using UniformBufferObject = BufferObject<BufferObjectType::Uniform>;
 
-}
+} // namespace Core

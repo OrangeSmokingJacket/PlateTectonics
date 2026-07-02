@@ -85,4 +85,4 @@ namespace Core::Engine::Assets {
         cereal::BinaryOutputArchive serializer(file);
         serializer(asset->GetParameters());
     }
-}
+} // namespace Core::Engine::Assets

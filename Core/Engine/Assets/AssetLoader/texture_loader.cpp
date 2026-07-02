@@ -1,7 +1,7 @@
 #include "asset_loader.hpp"
 
-#include <ThirdParty/stb/stb_image.h>
 #include <Core/Engine/Assets/Texture/texture.hpp>
+#include <ThirdParty/stb/stb_image.h>
 
 #include <fstream>
 
@@ -39,4 +39,4 @@ namespace Core::Engine::Assets {
         return result;
     }
 
-}
+} // namespace Core::Engine::Assets

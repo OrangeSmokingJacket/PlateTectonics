@@ -15,4 +15,4 @@ namespace Core::Engine::Components {
         friend class ScriptablePack;
     };
 
-}
+} // namespace Core::Engine::Components

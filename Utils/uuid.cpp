@@ -4,9 +4,7 @@
 
 namespace utils {
 
-    std::string UUIDv4::to_string() const {
-        return std::format("{:x}{:x}", upper_, lower_);
-    }
+    std::string UUIDv4::to_string() const { return std::format("{:x}{:x}", upper_, lower_); }
 
     UUIDv4 GenerateUUIDv4() {
         thread_local std::random_device rd;
@@ -16,4 +14,4 @@ namespace utils {
         return {lower, upper};
     }
 
-}
+} // namespace utils

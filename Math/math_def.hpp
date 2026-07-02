@@ -1,9 +1,9 @@
 #pragma once
 
+#include "matrix_ops.hpp"
+#include "quaternion_ops.hpp"
 #include "scalar_ops.hpp"
 #include "vector_ops.hpp"
-#include "quaternion_ops.hpp"
-#include "matrix_ops.hpp"
 
 namespace math {
 
@@ -46,4 +46,4 @@ namespace math {
     template <typename T>
     using quaternion = impl::quaternion<T>;
 
-}
+} // namespace math

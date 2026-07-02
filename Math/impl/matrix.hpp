@@ -6,18 +6,16 @@ namespace math::impl {
     // TODO: conversion from and to vector
 
     template <typename T, size_t Columns, size_t Rows>
-    struct matrix : std::array<vector<T, Rows>, Columns>{
-
-        constexpr matrix() noexcept {
-            std::array<vector<T, Rows>, Columns>::fill(vector<T, Rows>{});
-        }
+    struct matrix : std::array<vector<T, Rows>, Columns> {
+        constexpr matrix() noexcept { std::array<vector<T, Rows>, Columns>::fill(vector<T, Rows>{}); }
 
         constexpr matrix(const matrix&) noexcept = default;
         constexpr matrix(matrix&&) noexcept = default;
         constexpr matrix& operator=(const matrix&) noexcept = default;
         constexpr matrix& operator=(matrix&&) noexcept = default;
 
-        template<typename... Args> requires (sizeof...(Args) == Columns)
+        template <typename... Args>
+        requires(sizeof...(Args) == Columns)
         explicit constexpr matrix(Args&&... args) noexcept
             : std::array<vector<T, Rows>, Columns>({std::forward<Args>(args)...}) {}
 
@@ -26,7 +24,8 @@ namespace math::impl {
         constexpr T* data() noexcept { return std::array<vector<T, Rows>, Columns>::data()->data(); }
         constexpr const T* data() const noexcept { return std::array<vector<T, Rows>, Columns>::data()->data(); }
 
-        static constexpr matrix identity() noexcept requires (Columns == Rows) {
+        static constexpr matrix identity() noexcept requires(Columns == Rows)
+        {
             matrix result{};
             for (size_t i = 0; i < Columns; ++i) {
                 result[i][i] = T{1};
@@ -35,7 +34,7 @@ namespace math::impl {
         }
     };
 
-    template<typename T, size_t Columns, size_t Rows>
+    template <typename T, size_t Columns, size_t Rows>
     constexpr vector<T, Columns> operator*(const matrix<T, Columns, Rows>& m, const vector<T, Rows>& v) noexcept {
         vector<T, Columns> result;
         for (size_t i = 0; i < Rows; ++i) {
@@ -46,7 +45,7 @@ namespace math::impl {
         return result;
     }
 
-    template<typename T, size_t M, size_t K, size_t N>
+    template <typename T, size_t M, size_t K, size_t N>
     constexpr matrix<T, M, N> operator*(const matrix<T, K, N>& m1, const matrix<T, M, K>& m2) noexcept {
         matrix<T, M, N> result{};
         for (size_t i = 0; i < M; ++i) {
@@ -59,7 +58,7 @@ namespace math::impl {
         return result;
     }
 
-    template<typename T, size_t Columns, size_t Rows>
+    template <typename T, size_t Columns, size_t Rows>
     constexpr matrix<T, Columns, Rows> operator*(const matrix<T, Columns, Rows>& lhs, T val) noexcept {
         matrix<T, Columns, Rows> result;
         for (size_t i = 0; i < matrix<T, Columns, Rows>::cardinality; ++i) {
@@ -68,7 +67,7 @@ namespace math::impl {
         return result;
     }
 
-    template<typename T, size_t Columns, size_t Rows>
+    template <typename T, size_t Columns, size_t Rows>
     constexpr matrix<T, Columns, Rows> operator*(T val, const matrix<T, Columns, Rows>& rhs) noexcept {
         matrix<T, Columns, Rows> result;
         for (size_t i = 0; i < matrix<T, Columns, Rows>::cardinality; ++i) {
@@ -77,7 +76,7 @@ namespace math::impl {
         return result;
     }
 
-    template<typename T, size_t Columns, size_t Rows>
+    template <typename T, size_t Columns, size_t Rows>
     constexpr matrix<T, Columns, Rows> operator/(const matrix<T, Columns, Rows>& lhs, T val) noexcept {
         matrix<T, Columns, Rows> result;
         for (size_t i = 0; i < matrix<T, Columns, Rows>::cardinality; ++i) {
@@ -86,7 +85,7 @@ namespace math::impl {
         return result;
     }
 
-}
+} // namespace math::impl
 
 namespace std {
 
@@ -97,4 +96,4 @@ namespace std {
         }
     };
 
-}
+} // namespace std

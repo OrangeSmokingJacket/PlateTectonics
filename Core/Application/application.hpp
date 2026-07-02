@@ -1,7 +1,7 @@
 #pragma once
 
-#include "window.hpp"
 #include "layer.hpp"
+#include "window.hpp"
 
 #include <memory>
 
@@ -34,10 +34,11 @@ namespace Core {
     private:
         Window main_window_;
         std::vector<std::unique_ptr<BaseLayer>> layers_;
-        std::chrono::time_point<std::chrono::high_resolution_clock> last_time_point_ = std::chrono::high_resolution_clock::now();
+        std::chrono::time_point<std::chrono::high_resolution_clock> last_time_point_ =
+            std::chrono::high_resolution_clock::now();
         bool run_main_loop_ = true;
 
         inline static Application* s_application_ = nullptr;
     };
 
-}
+} // namespace Core

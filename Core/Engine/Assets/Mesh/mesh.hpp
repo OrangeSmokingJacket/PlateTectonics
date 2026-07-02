@@ -1,71 +1,71 @@
 #pragma once
 
+#include <Core/Engine/Assets/Base/base.hpp>
 #include <Math/math_def.hpp>
 #include <Utils/buffer_utils.hpp>
-#include <Core/Engine/Assets/Base/base.hpp>
 #include <memory>
 
 namespace Core::Engine::Assets {
 
-	// TODO?: different storage types, OpenGL supports more than just float and uint32
+    // TODO?: different storage types, OpenGL supports more than just float and uint32
 
-	enum class VertexAttribute : uint16_t {
-		Position = 1,
-		Normal = 2,
-		Tangent = 4,
-		Color = 8,
-		UV0 = 16,
-		UV1 = 32,
-		UV2 = 64,
-		UV3 = 128,
-		UV4 = 256,
-		UV5 = 512,
-		UV6 = 1024,
-		UV7 = 2048
-	};
+    enum class VertexAttribute : uint16_t {
+        Position = 1,
+        Normal = 2,
+        Tangent = 4,
+        Color = 8,
+        UV0 = 16,
+        UV1 = 32,
+        UV2 = 64,
+        UV3 = 128,
+        UV4 = 256,
+        UV5 = 512,
+        UV6 = 1024,
+        UV7 = 2048
+    };
 
-	size_t VertexAttributePosition(VertexAttribute attribute);
+    size_t VertexAttributePosition(VertexAttribute attribute);
 
     // underlying value could be used for calculating size
-	enum class ElementType : uint8_t {
-		Point = 1,
-		Edge = 2,
-		Triangle = 3,
-	};
+    enum class ElementType : uint8_t {
+        Point = 1,
+        Edge = 2,
+        Triangle = 3,
+    };
 
-	constexpr size_t VertexAttributesCount = 12;
+    constexpr size_t VertexAttributesCount = 12;
 
-	using VertexPosition = math::vec3<float>;
-	using VertexNormal = math::vec3<float>;
-	using VertexTangent = math::vec3<float>;
-	using VertexColor = math::vec4<uint8_t>;
-	using VertexUV = math::vec2<float>;
+    using VertexPosition = math::vec3<float>;
+    using VertexNormal = math::vec3<float>;
+    using VertexTangent = math::vec3<float>;
+    using VertexColor = math::vec4<uint8_t>;
+    using VertexUV = math::vec2<float>;
 
-	struct PointIndices {
-		static constexpr ElementType element_type = ElementType::Point;
+    struct PointIndices {
+        static constexpr ElementType element_type = ElementType::Point;
 
-		uint32_t index;
-	};
+        uint32_t index;
+    };
 
-	struct EdgeIndices {
-		static constexpr ElementType element_type = ElementType::Edge;
+    struct EdgeIndices {
+        static constexpr ElementType element_type = ElementType::Edge;
 
-		std::array<uint32_t, 2> indices;
-	};
+        std::array<uint32_t, 2> indices;
+    };
 
-	struct TriangleIndices {
-		static constexpr ElementType element_type = ElementType::Triangle;
+    struct TriangleIndices {
+        static constexpr ElementType element_type = ElementType::Triangle;
 
-		std::array<uint32_t, 3> indices;
-	};
+        std::array<uint32_t, 3> indices;
+    };
 
-	struct MeshData {
-		utils::Buffer<VertexPosition> positions;
-		utils::Buffer<VertexNormal> normals;
-		utils::Buffer<VertexTangent> tangents;
-		utils::Buffer<VertexColor> colors;
-		std::array<utils::Buffer<VertexUV>, 8> uvs;
-	};
+    struct MeshData {
+        utils::Buffer<VertexPosition> positions;
+        utils::Buffer<VertexNormal> normals;
+        utils::Buffer<VertexTangent> tangents;
+        utils::Buffer<VertexColor> colors;
+        std::array<utils::Buffer<VertexUV>, 8> uvs;
+    };
 
     struct SubMeshElements {
         uint32_t start_index;
@@ -84,8 +84,8 @@ namespace Core::Engine::Assets {
         explicit Mesh(MeshData&& data, MeshElements&& elements) noexcept;
         static constexpr AssetType asset_type = AssetType::Mesh;
 
-		MeshData mesh_data;
-		MeshElements elements;
-	};
+        MeshData mesh_data;
+        MeshElements elements;
+    };
 
-}
+} // namespace Core::Engine::Assets

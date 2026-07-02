@@ -10,7 +10,6 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
-
 // TODO: move to separate file
 class OrbitCamera : public Core::Engine::Components::Scriptable {
 public:
@@ -42,16 +41,20 @@ public:
             input_dir[0] -= rotation_speed_ * delta_time;
         }
 
-        auto& parent_rotation = std::get<Core::Engine::Components::EulerAngles>(transform_component->parent_transform->rotation);
+        auto& parent_rotation =
+            std::get<Core::Engine::Components::EulerAngles>(transform_component->parent_transform->rotation);
         // TODO: set once on start
         parent_rotation.ordering = Core::Engine::Components::EulerRotationOrdering::XYZ;
 
-        parent_rotation.rotation_degrees.x = std::clamp(parent_rotation.rotation_degrees.x + input_dir[1], -max_latitude_angle_, max_latitude_angle_);
+        parent_rotation.rotation_degrees.x =
+            std::clamp(parent_rotation.rotation_degrees.x + input_dir[1], -max_latitude_angle_, max_latitude_angle_);
         // TODO: rotating continuously in one direction will lose precision
         parent_rotation.rotation_degrees.y += input_dir[0];
 
-        transform_component->position.z = std::clamp(transform_component->position.z + input_dir[2], min_distance_, max_distance_);
+        transform_component->position.z =
+            std::clamp(transform_component->position.z + input_dir[2], min_distance_, max_distance_);
     }
+
 private:
     math::vec2<double> last_mouse_pos_;
     float rotation_speed_ = 50.0f;
@@ -61,14 +64,12 @@ private:
     float max_distance_ = 100.0f;
 };
 
-
 constexpr size_t BUFFER_ALLOCATION_SIZE = 32 * 1024 * 1024; // 32 MB
 
 MainLayer::MainLayer()
     : asset_manager_(&thread_pool_)
     , pipeline_(BUFFER_ALLOCATION_SIZE)
     , mantle_sim_(&pipeline_, &thread_pool_) {
-
     // TODO: this has to be done async
     asset_manager_.LoadAssetsEntries();
 
@@ -78,7 +79,8 @@ MainLayer::MainLayer()
     auto camera_obj = scene_.GetEntityManager().AddEntity();
     camera_obj->AddComponent<Core::Engine::Components::Transform>();
     camera_obj->GetComponent<Core::Engine::Components::Transform>()->position.z += 25.0f;
-    camera_obj->GetComponent<Core::Engine::Components::Transform>()->parent_transform = camera_parent->GetComponent<Core::Engine::Components::Transform>();
+    camera_obj->GetComponent<Core::Engine::Components::Transform>()->parent_transform =
+        camera_parent->GetComponent<Core::Engine::Components::Transform>();
     camera_obj->AddComponent<OrbitCamera>();
     camera_obj->AddComponent<Core::Engine::Components::Camera>(math::to_radians(60.0f), 0.01f, 1000.0f);
 
@@ -125,9 +127,9 @@ void MainLayer::Render() {
     // TODO: preload assets before rendering
 
     Core::CameraMatrices matrices{
-        .view_matrix = scene_.MainCamera()->ViewMatrix(scene_.MainCamera()->GetEntity()->GetComponent<Core::Engine::Components::Transform>()),
-        .perspective_matrix = scene_.MainCamera()->PerspectiveMatrix(window_ptr->AspectRation())
-    };
+        .view_matrix = scene_.MainCamera()->ViewMatrix(
+            scene_.MainCamera()->GetEntity()->GetComponent<Core::Engine::Components::Transform>()),
+        .perspective_matrix = scene_.MainCamera()->PerspectiveMatrix(window_ptr->AspectRation())};
     pipeline_.BindCameraMatrices(matrices);
 
     // Unlit render pass
@@ -180,10 +182,13 @@ void MainLayer::Render() {
         pipeline_.Init();
 
         pipeline_.BindSlice(mantle_sim_.RenderTexture(),
-            // TODO: account for scale
-            math::vec3<float>{mantle_sim_.full_dimensions.x, mantle_sim_.full_dimensions.y, mantle_sim_.full_dimensions.z } / 2.0f,
-            resolution,
-            0);
+                            // TODO: account for scale
+                            math::vec3<float>{mantle_sim_.full_dimensions.x,
+                                              mantle_sim_.full_dimensions.y,
+                                              mantle_sim_.full_dimensions.z} /
+                                2.0f,
+                            resolution,
+                            0);
         pipeline_.SetModelMatrix(math::mat4x4<float>::identity());
         pipeline_.DrawSlice();
 
@@ -247,7 +252,10 @@ void MainLayer::HandleImGUI() {
             }
             ImGui::Checkbox("Draw Boundary Velocities", &mantle_sim_.draw_boundary_velocities);
             ImGui::Checkbox("Interpolate Velocities", &mantle_sim_.draw_interpolated_velocities);
-            ImGui::SliderInt("Per Cell interpolations", &mantle_sim_.cell_subdivision, 1, mantle_sim_.max_cell_subdivision);
+            ImGui::SliderInt("Per Cell interpolations",
+                             &mantle_sim_.cell_subdivision,
+                             1,
+                             mantle_sim_.max_cell_subdivision);
 
             ImGui::Unindent(10.0f);
         }
@@ -259,8 +267,12 @@ void MainLayer::HandleImGUI() {
                 HandleDrawSlice(&mantle_sim_.draw_slice, EulerFluidSim::DrawSlice::Temperature);
             }
             if (ImGui::CollapsingHeader("Colors")) {
-                ImGui::ColorPicker3("Coldest", mantle_sim_.min_temperature_color.data(), ImGuiColorEditFlags_PickerHueWheel);
-                ImGui::ColorPicker3("Hottest", mantle_sim_.max_temperature_color.data(), ImGuiColorEditFlags_PickerHueWheel);
+                ImGui::ColorPicker3("Coldest",
+                                    mantle_sim_.min_temperature_color.data(),
+                                    ImGuiColorEditFlags_PickerHueWheel);
+                ImGui::ColorPicker3("Hottest",
+                                    mantle_sim_.max_temperature_color.data(),
+                                    ImGuiColorEditFlags_PickerHueWheel);
             }
 
             ImGui::PopID();
@@ -278,8 +290,12 @@ void MainLayer::HandleImGUI() {
                     HandleDrawSlice(&mantle_sim_.draw_slice, EulerFluidSim::DrawSlice::Pressure);
                 }
                 if (ImGui::CollapsingHeader("Colors")) {
-                    ImGui::ColorPicker3("Min", mantle_sim_.min_pressure_color.data(), ImGuiColorEditFlags_PickerHueWheel);
-                    ImGui::ColorPicker3("Max", mantle_sim_.max_pressure_color.data(), ImGuiColorEditFlags_PickerHueWheel);
+                    ImGui::ColorPicker3("Min",
+                                        mantle_sim_.min_pressure_color.data(),
+                                        ImGuiColorEditFlags_PickerHueWheel);
+                    ImGui::ColorPicker3("Max",
+                                        mantle_sim_.max_pressure_color.data(),
+                                        ImGuiColorEditFlags_PickerHueWheel);
                 }
 
                 ImGui::PopID();
@@ -293,8 +309,12 @@ void MainLayer::HandleImGUI() {
                     HandleDrawSlice(&mantle_sim_.draw_slice, EulerFluidSim::DrawSlice::PressureDivergence);
                 }
                 if (ImGui::CollapsingHeader("Colors")) {
-                    ImGui::ColorPicker3("Min", mantle_sim_.min_divergence_color.data(), ImGuiColorEditFlags_PickerHueWheel);
-                    ImGui::ColorPicker3("Max", mantle_sim_.max_divergence_color.data(), ImGuiColorEditFlags_PickerHueWheel);
+                    ImGui::ColorPicker3("Min",
+                                        mantle_sim_.min_divergence_color.data(),
+                                        ImGuiColorEditFlags_PickerHueWheel);
+                    ImGui::ColorPicker3("Max",
+                                        mantle_sim_.max_divergence_color.data(),
+                                        ImGuiColorEditFlags_PickerHueWheel);
                 }
 
                 ImGui::PopID();

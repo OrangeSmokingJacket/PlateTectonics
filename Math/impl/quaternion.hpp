@@ -29,7 +29,9 @@ namespace math::impl {
         T w;
         union {
             impl::vector<T, 3> vector;
-            struct { T x, y, z; };
+            struct {
+                T x, y, z;
+            };
         };
     };
 
@@ -105,7 +107,7 @@ namespace math::impl {
 
     // Arithmetics
 
-    template<typename T>
+    template <typename T>
     constexpr quaternion<T> operator+(const quaternion<T>& lhs, const quaternion<T>& rhs) noexcept {
         quaternion<T> result;
         result.w = lhs.w + rhs.w;
@@ -113,38 +115,38 @@ namespace math::impl {
         return result;
     }
 
-    template<typename T>
-    constexpr quaternion<T>& operator+=(quaternion<T>& lhs, const quaternion<T>& rhs) noexcept{
+    template <typename T>
+    constexpr quaternion<T>& operator+=(quaternion<T>& lhs, const quaternion<T>& rhs) noexcept {
         lhs.w += rhs.w;
         lhs.vector += rhs.vector;
         return lhs;
     }
 
-    template<typename T>
-    constexpr quaternion<T> operator-(const quaternion<T>& lhs, const quaternion<T>& rhs) noexcept{
+    template <typename T>
+    constexpr quaternion<T> operator-(const quaternion<T>& lhs, const quaternion<T>& rhs) noexcept {
         quaternion<T> result;
         result.w = lhs.w - rhs.w;
         result.vector = lhs.vector - rhs.vector;
         return result;
     }
 
-    template<typename T>
-    constexpr quaternion<T>& operator-=(quaternion<T>& lhs, const quaternion<T>& rhs) noexcept{
+    template <typename T>
+    constexpr quaternion<T>& operator-=(quaternion<T>& lhs, const quaternion<T>& rhs) noexcept {
         lhs.w -= rhs.w;
         lhs.vector -= rhs.vector;
         return lhs;
     }
 
-    template<typename T>
-    constexpr quaternion<T> operator*(const quaternion<T>& lhs, T val) noexcept{
+    template <typename T>
+    constexpr quaternion<T> operator*(const quaternion<T>& lhs, T val) noexcept {
         quaternion<T> result;
         result.w = lhs.w * val;
         result.vector = lhs.vector * val;
         return result;
     }
 
-    template<typename T>
-    constexpr quaternion<T> operator*(const quaternion<T>& lhs, const quaternion<T>& rhs) noexcept{
+    template <typename T>
+    constexpr quaternion<T> operator*(const quaternion<T>& lhs, const quaternion<T>& rhs) noexcept {
         // TODO: profile which one is faster
         /*
         quaternion<T> result;
@@ -154,14 +156,12 @@ namespace math::impl {
         result.z = (lhs.w * rhs.z) + (lhs.x * rhs.y) - (lhs.y * rhs.x) + (lhs.z * rhs.w);
         return result;
         */
-        return quaternion<T>{
-            lhs.w * rhs.w - dot_product(lhs.vector, rhs.vector),
-            lhs.w * rhs.vector + rhs.w * lhs.vector + cross_product(lhs.vector, rhs.vector)
-        };
+        return quaternion<T>{lhs.w * rhs.w - dot_product(lhs.vector, rhs.vector),
+                             lhs.w * rhs.vector + rhs.w * lhs.vector + cross_product(lhs.vector, rhs.vector)};
     }
 
-    template<typename T>
-    constexpr quaternion<T>& operator*=(quaternion<T>& lhs, const quaternion<T>& rhs) noexcept{
+    template <typename T>
+    constexpr quaternion<T>& operator*=(quaternion<T>& lhs, const quaternion<T>& rhs) noexcept {
         // TODO: vector vs component based computation
         quaternion<T> result;
         result.w = (lhs.w * rhs.w) - (lhs.x * rhs.x) - (lhs.y * rhs.y) - (lhs.z * rhs.z);
@@ -172,26 +172,26 @@ namespace math::impl {
         return lhs;
     }
 
-    template<typename T>
-    constexpr quaternion<T>& operator*=(quaternion<T>& lhs, T val) noexcept{
+    template <typename T>
+    constexpr quaternion<T>& operator*=(quaternion<T>& lhs, T val) noexcept {
         lhs.w *= val;
         lhs.vector *= val;
         return lhs;
     }
 
-    template<typename T>
-    constexpr quaternion<T> operator/(const quaternion<T>& lhs, T val) noexcept{
+    template <typename T>
+    constexpr quaternion<T> operator/(const quaternion<T>& lhs, T val) noexcept {
         quaternion<T> result;
         result.w = lhs.w / val;
         result.vector = lhs.vector / val;
         return result;
     }
 
-    template<typename T>
-    constexpr quaternion<T>& operator/=(quaternion<T>& lhs, T val) noexcept{
+    template <typename T>
+    constexpr quaternion<T>& operator/=(quaternion<T>& lhs, T val) noexcept {
         lhs.w /= val;
         lhs.vector /= val;
         return lhs;
     }
 
-}
+} // namespace math::impl

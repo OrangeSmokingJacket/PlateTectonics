@@ -1,15 +1,16 @@
 #pragma once
 
-#include <Core/Engine/Assets/Base/base.hpp>
 #include <Core/Engine/Assets/AssetManager/asset_manager.hpp>
+#include <Core/Engine/Assets/Base/base.hpp>
 
 namespace Core::Engine::Assets {
 
     // Optionally holds reference to an asset
     // ID == InvalidAssetID -> no asset ref
-    template<typename T>
+    template <typename T>
     struct AssetRef {
-        AssetRef(AssetID ID = InvalidAssetID) : ID(ID) {}
+        AssetRef(AssetID ID = InvalidAssetID)
+            : ID(ID) {}
 
         bool HasAsset() const noexcept;
         const T* GetAsset() const;
@@ -28,7 +29,9 @@ namespace Core::Engine::Assets {
     }
 
     template <typename T>
-    bool AssetRef<T>::HasAsset() const noexcept { return ID != InvalidAssetID; }
+    bool AssetRef<T>::HasAsset() const noexcept {
+        return ID != InvalidAssetID;
+    }
 
     template <typename T>
     const T* AssetRef<T>::GetAsset() const {
@@ -38,4 +41,4 @@ namespace Core::Engine::Assets {
             return nullptr;
         }
     }
-}
+} // namespace Core::Engine::Assets

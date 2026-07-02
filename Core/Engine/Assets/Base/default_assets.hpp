@@ -12,10 +12,11 @@ namespace Core::Engine::Assets {
         AssetID ID;
     };
 
-    template<size_t Size>
+    template <size_t Size>
     class asset_map_t {
     public:
-        constexpr asset_map_t(std::array<KeyValue, Size> init) : data_(init) {}
+        constexpr asset_map_t(std::array<KeyValue, Size> init)
+            : data_(init) {}
 
         constexpr std::string_view GetName(AssetID ID) const {
             for (const auto& entry : data_) {
@@ -42,7 +43,6 @@ namespace Core::Engine::Assets {
     // This is a temp
     constexpr asset_map_t DefaultAssets(std::array{
         KeyValue{"DefaultTexture", AssetID(0x8DAA9967E548EAD5, 0xBC4FEAE26472413F)},
-        KeyValue{"CubeUV", AssetID(0xA5534F53D183DBEB, 0x0874747A1EAF4E4D)}
-    });
+        KeyValue{"CubeUV", AssetID(0xA5534F53D183DBEB, 0x0874747A1EAF4E4D)}});
 
-}
+} // namespace Core::Engine::Assets

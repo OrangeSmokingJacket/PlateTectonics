@@ -1,7 +1,7 @@
 #pragma once
 
-#include "shader_program.hpp"
 #include "shader_generator.hpp"
+#include "shader_program.hpp"
 
 #include <unordered_map>
 
@@ -26,6 +26,6 @@ namespace Core::ShaderGenerator {
             std::unordered_map<size_t, ShaderProgram> program_variants_;
         };
 
-    }
+    } // namespace Unlit
 
-}
+} // namespace Core::ShaderGenerator

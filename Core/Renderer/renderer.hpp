@@ -4,8 +4,8 @@
 
 #include "variant_shader_program.hpp"
 
-#include <Core/Engine/Assets/Mesh/mesh.hpp>
 #include <Core/Engine/Assets/Material/material.hpp>
+#include <Core/Engine/Assets/Mesh/mesh.hpp>
 
 #include <span>
 #include <unordered_map>
@@ -33,15 +33,28 @@ namespace Core {
         // TODO: submeshes
         void DrawElements(const Engine::Assets::Mesh* mesh, const Engine::Assets::MaterialUnlit* material) const;
         // Slice pass
-        void BindSlice(Engine::Assets::AssetRef<Engine::Assets::Texture3Df> sample, const math::vec3<float>& bounds, const math::vec2<float>& resolution, float plain_offset = 0);
+        void BindSlice(Engine::Assets::AssetRef<Engine::Assets::Texture3Df> sample,
+                       const math::vec3<float>& bounds,
+                       const math::vec2<float>& resolution,
+                       float plain_offset = 0);
         void DrawSlice();
 
         // Debug pass
         void ReserveLineSpace(Engine::Assets::SColor color, size_t count, bool persistent);
         void DebugDrawAll();
-        void DebugDrawBox(const math::vec3<float>& center, const math::vec3<float>& extent, Engine::Assets::SColor color, bool persistent);
-        void DebugDrawLine(const math::vec3<float>& start, const math::vec3<float>& end, Engine::Assets::SColor color, bool persistent);
-        void DebugDrawArrow(const math::vec3<float>& start, const math::vec3<float>& end, float head_size, Engine::Assets::SColor color, bool persistent);
+        void DebugDrawBox(const math::vec3<float>& center,
+                          const math::vec3<float>& extent,
+                          Engine::Assets::SColor color,
+                          bool persistent);
+        void DebugDrawLine(const math::vec3<float>& start,
+                           const math::vec3<float>& end,
+                           Engine::Assets::SColor color,
+                           bool persistent);
+        void DebugDrawArrow(const math::vec3<float>& start,
+                            const math::vec3<float>& end,
+                            float head_size,
+                            Engine::Assets::SColor color,
+                            bool persistent);
 
     private:
         struct DebugLine {
@@ -69,7 +82,6 @@ namespace Core {
         ShaderGenerator::Unlit::VariantShaderProgram unlit_programs_;
         uint32_t bounded_attributes_count_ = 0;
         GLuint bounded_program_id_ = GL_INVALID_INDEX;
-
     };
 
-}
+} // namespace Core

@@ -5,4 +5,4 @@ namespace Core::Engine::Assets {
     Asset::Asset(AssetID ID) noexcept
         : ID(ID) {}
 
-}
+} // namespace Core::Engine::Assets

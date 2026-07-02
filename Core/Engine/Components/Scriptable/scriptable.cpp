@@ -1,5 +1,3 @@
 #include "scriptable.hpp"
 
-namespace Core::Engine::Components {
-
-}
+namespace Core::Engine::Components {}

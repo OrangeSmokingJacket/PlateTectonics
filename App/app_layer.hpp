@@ -3,11 +3,10 @@
 
 #include <Core/Application/layer.hpp>
 #include <Core/Engine/Assets/AssetManager/asset_manager.hpp>
-#include <Core/Engine/Scene/scene.hpp>
 #include <Core/Engine/Components/Camera/camera.hpp>
+#include <Core/Engine/Scene/scene.hpp>
 #include <Core/Renderer/renderer.hpp>
 #include <Utils/thread_pool.hpp>
-
 
 class MainLayer : public Core::BaseLayer {
 public:

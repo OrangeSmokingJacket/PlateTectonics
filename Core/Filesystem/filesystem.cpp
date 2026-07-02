@@ -1,7 +1,7 @@
 #include "filesystem.hpp"
 
-#include <fstream>
 #include <cassert>
+#include <fstream>
 
 namespace Core::Filesystem {
 
@@ -16,6 +16,6 @@ namespace Core::Filesystem {
         std::stringstream buffer;
         buffer << file.rdbuf();
         return std::move(buffer).str();
-	}
+    }
 
-}
+} // namespace Core::Filesystem

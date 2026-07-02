@@ -9,9 +9,9 @@
 namespace Core {
 
     void window_resize_callback(GLFWwindow* window, int width, int height) {
-    // Tells OpenGL the size of the rendering window
-    glViewport(0, 0, width, height);
-}
+        // Tells OpenGL the size of the rendering window
+        glViewport(0, 0, width, height);
+    }
 
     void PrintOpenGLInfo() {
         std::cout << "Vendor: " << glGetString(GL_VENDOR) << std::endl;
@@ -28,9 +28,12 @@ namespace Core {
             std::exit(-1);
         }
 
-        glfw_window_ = glfwCreateWindow(configuration_.width, configuration_.height, configuration_.name.c_str(), nullptr, nullptr);
-        if (!glfw_window_)
-        {
+        glfw_window_ = glfwCreateWindow(configuration_.width,
+                                        configuration_.height,
+                                        configuration_.name.c_str(),
+                                        nullptr,
+                                        nullptr);
+        if (!glfw_window_) {
             const char* error;
             glfwGetError(&error);
             std::cerr << "GLFW could not initialize main window: " << error << std::endl;
@@ -56,7 +59,8 @@ namespace Core {
 
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
-        ImGuiIO& io = ImGui::GetIO(); (void)io;
+        ImGuiIO& io = ImGui::GetIO();
+        (void)io;
         ImGui::StyleColorsDark();
         ImGui_ImplGlfw_InitForOpenGL(glfw_window_, true);
         ImGui_ImplOpenGL3_Init("#version 460");
@@ -80,19 +84,13 @@ namespace Core {
         glfwGetWindowSize(glfw_window_, &configuration_.width, &configuration_.height);
     }
 
-    int Window::Width() const noexcept {
-        return configuration_.width;
-    }
+    int Window::Width() const noexcept { return configuration_.width; }
 
-    int Window::Height() const noexcept {
-        return configuration_.height;
-    }
+    int Window::Height() const noexcept { return configuration_.height; }
 
     float Window::AspectRation() const noexcept {
         return static_cast<float>(configuration_.width) / static_cast<float>(configuration_.height);
     }
 
-    GLFWwindow* Window::GetGLFWWindow() noexcept {
-        return glfw_window_;
-    }
-}
+    GLFWwindow* Window::GetGLFWWindow() noexcept { return glfw_window_; }
+} // namespace Core

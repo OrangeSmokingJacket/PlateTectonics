@@ -57,6 +57,6 @@ namespace Core::ShaderGenerator {
             return result;
         }
 
-    }
+    } // namespace Unlit
 
-}
+} // namespace Core::ShaderGenerator

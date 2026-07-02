@@ -18,4 +18,4 @@ namespace Core {
         virtual void Render() {}
     };
 
-}
+} // namespace Core

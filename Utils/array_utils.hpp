@@ -11,4 +11,4 @@ namespace utils {
         return {(void(Indices), T(args...))...};
     }
 
-}
+} // namespace utils

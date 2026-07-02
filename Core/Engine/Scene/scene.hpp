@@ -16,4 +16,4 @@ namespace Core::Engine {
         EntityManager entity_manager_;
     };
 
-}
+} // namespace Core::Engine

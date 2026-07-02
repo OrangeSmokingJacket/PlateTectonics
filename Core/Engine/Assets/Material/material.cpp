@@ -1,5 +1,3 @@
 #include "material.hpp"
 
-namespace Core::Engine::Assets {
-
-}
+namespace Core::Engine::Assets {}

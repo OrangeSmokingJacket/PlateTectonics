@@ -8,8 +8,8 @@ namespace utils {
 #elif defined(_MSC_VER)
         __assume(false);
 #else
-        static_assert(false && "unhandles compiler in unreachable()");
+        static_assert(false && "unhandled compiler in unreachable()");
 #endif
     }
 
-}
+} // namespace utils

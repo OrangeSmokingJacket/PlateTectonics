@@ -1,44 +1,44 @@
 #pragma once
 
+// order matters here
+// clang-format off
 #include <ThirdParty/glad/glad.h>
 #include <GLFW/glfw3.h>
+// clang-format on
 
+#include <Core/Filesystem/filesystem.hpp>
 #include <cassert>
 #include <iostream>
-#include <Core/Filesystem/filesystem.hpp>
 
 namespace Core {
 
     static const std::filesystem::path shaders_dir = std::filesystem::path(SHADERS_DIR).make_preferred();
     using ShaderID = GLuint;
 
-    enum class ShaderType : uint8_t {
-        Vertex,
-        Fragment
-    };
+    enum class ShaderType : uint8_t { Vertex, Fragment };
 
     template <ShaderType TYPE>
-        requires (TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
+    requires(TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
     GLuint CompileShader(const Filesystem::buffer_t& source);
 
+    template <ShaderType TYPE>
+    requires(TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
+    class Shader {
+    public:
+        explicit Shader(GLuint shader_id);
+        explicit Shader(const std::filesystem::path& path);
 
-    template <ShaderType TYPE> requires (TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
-        class Shader {
-        public:
-            explicit Shader(GLuint shader_id);
-            explicit Shader(const std::filesystem::path& path);
+        Shader(const Shader&) = delete;
+        Shader& operator=(const Shader&) = delete;
 
-            Shader(const Shader&) = delete;
-            Shader& operator=(const Shader&) = delete;
+        Shader(Shader&&) noexcept;
+        Shader& operator=(Shader&&) noexcept;
+        ~Shader();
 
-            Shader(Shader&&) noexcept;
-            Shader& operator=(Shader&&) noexcept;
-            ~Shader();
+        ShaderID ShaderId() const noexcept;
 
-            ShaderID ShaderId() const noexcept;
-
-        private:
-            ShaderID shader_id_ = GL_INVALID_INDEX;
+    private:
+        ShaderID shader_id_ = GL_INVALID_INDEX;
     };
 
     // shared ptr is not the best, but it makes them usable in other pipelines, maintaining RAII
@@ -74,7 +74,7 @@ namespace Core {
     };
 
     template <ShaderType TYPE>
-        requires (TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
+    requires(TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
     ShaderID CompileShader(const Filesystem::buffer_t& source) {
         ShaderID shader_id = GL_INVALID_INDEX;
 
@@ -108,26 +108,27 @@ namespace Core {
         return shader_id;
     }
 
-    template <ShaderType TYPE> requires (TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
+    template <ShaderType TYPE>
+    requires(TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
     Shader<TYPE>::Shader(GLuint shader_id)
         : shader_id_(shader_id) {}
 
     template <ShaderType TYPE>
-        requires (TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
+    requires(TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
     Shader<TYPE>::Shader(const std::filesystem::path& path)
         : shader_id_(CompileShader<TYPE>(Filesystem::ReadFullFile(path))) {}
 
     // set GL_INVALID_INDEX to moved from shaders, so they won't deallocate them
 
     template <ShaderType TYPE>
-        requires (TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
+    requires(TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
     Shader<TYPE>::Shader(Shader&& other) noexcept
         : shader_id_(other.shader_id_) {
         other.shader_id_ = GL_INVALID_INDEX;
     }
 
-    template<ShaderType TYPE>
-        requires (TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
+    template <ShaderType TYPE>
+    requires(TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
     Shader<TYPE>& Shader<TYPE>::operator=(Shader<TYPE>&& other) noexcept {
         if (shader_id_ != GL_INVALID_INDEX) {
             glDeleteShader(shader_id_);
@@ -138,18 +139,19 @@ namespace Core {
         return *this;
     }
 
-    template<ShaderType TYPE>
-        requires (TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
+    template <ShaderType TYPE>
+    requires(TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
     Shader<TYPE>::~Shader() {
         if (shader_id_ != GL_INVALID_INDEX) {
             glDeleteShader(shader_id_);
         }
     }
 
-    template<ShaderType TYPE>
-        requires (TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
-    ShaderID Shader<TYPE>::ShaderId() const noexcept { return shader_id_; }
-
+    template <ShaderType TYPE>
+    requires(TYPE == ShaderType::Vertex || TYPE == ShaderType::Fragment)
+    ShaderID Shader<TYPE>::ShaderId() const noexcept {
+        return shader_id_;
+    }
 
     // User defined Shader
     class UDS {
@@ -160,7 +162,6 @@ namespace Core {
         virtual void BindData() = 0;
         // Execute shaders
         virtual void Compute() = 0;
-
     };
 
     enum class UDSType {
@@ -171,4 +172,4 @@ namespace Core {
 
     using UDSPtr = std::unique_ptr<UDS>;
 
-}
+} // namespace Core

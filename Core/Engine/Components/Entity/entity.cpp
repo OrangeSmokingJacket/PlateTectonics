@@ -1,6 +1,5 @@
 #include "entity.hpp"
 
-
 namespace Core::Engine {
 
     Entity::Entity(Entity&& other) noexcept
@@ -14,13 +13,11 @@ namespace Core::Engine {
         return *this;
     }
 
-    void Entity::Destroy() {
-        is_alive_ = false;
-    }
+    void Entity::Destroy() { is_alive_ = false; }
 
     void Entity::RestoreEntityLink() {
         for (const auto& entry : components_) {
             entry.second->LinkEntity(this);
         }
     }
-}
+} // namespace Core::Engine

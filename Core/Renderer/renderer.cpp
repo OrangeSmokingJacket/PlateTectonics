@@ -1,5 +1,4 @@
 #include "renderer.hpp"
-#include "renderer.hpp"
 
 #include <cassert>
 
@@ -7,7 +6,7 @@ namespace Core {
 
     template <typename T, size_t... Indices>
     std::array<T, sizeof...(Indices)> MakeArrayFromIndices(uint32_t value, std::index_sequence<Indices...>) {
-        return { {((void)Indices, T{value})... } };
+        return {{((void)Indices, T{value})...}};
     }
 
     template <typename T, size_t Size>
@@ -18,71 +17,67 @@ namespace Core {
     static constexpr std::array<GLenum, 3> axis_mapping = {GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_TEXTURE_WRAP_R};
     static constexpr std::array<GLenum, 3> dimensions_mapping = {GL_TEXTURE_1D, GL_TEXTURE_2D, GL_TEXTURE_3D};
 
-    template <size_t Dimensions> requires(Dimensions <= 3)
+    template <size_t Dimensions>
+    requires(Dimensions <= 3)
     void SetTextureParameter(Engine::Assets::TextureFiltering filtering) {
         static constexpr auto target = dimensions_mapping[Dimensions - 1];
         using namespace Engine::Assets;
 
         switch (filtering) {
-        case TextureFiltering::Nearest:
-            glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            break;
-        case TextureFiltering::Linear:
-            glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            break;
-        default:
-            assert(false);
+            case TextureFiltering::Nearest:
+                glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                break;
+            case TextureFiltering::Linear:
+                glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                break;
+            default:
+                assert(false);
         }
     }
 
-    template <size_t Dimensions> requires(Dimensions <= 3)
+    template <size_t Dimensions>
+    requires(Dimensions <= 3)
     void SetTextureParameter(const math::impl::vector<Engine::Assets::TextureWrapping, Dimensions>& wrapping) {
         static constexpr auto target = dimensions_mapping[Dimensions - 1];
         using namespace Engine::Assets;
 
         for (size_t i = 0; i < Dimensions; ++i) {
             switch (wrapping[i]) {
-            case TextureWrapping::Repeat:
-                glTexParameteri(target, axis_mapping[i], GL_REPEAT);
-                break;
-            case TextureWrapping::MirroredRepeat:
-                glTexParameteri(target, axis_mapping[i], GL_MIRRORED_REPEAT);
-                break;
-            case TextureWrapping::ClampToBorder:
-                glTexParameteri(target, axis_mapping[i], GL_CLAMP_TO_BORDER);
-                break;
-            case TextureWrapping::ClampToEdge:
-                glTexParameteri(target, axis_mapping[i], GL_CLAMP_TO_EDGE);
-                break;
-            default:
-                assert(false);
+                case TextureWrapping::Repeat:
+                    glTexParameteri(target, axis_mapping[i], GL_REPEAT);
+                    break;
+                case TextureWrapping::MirroredRepeat:
+                    glTexParameteri(target, axis_mapping[i], GL_MIRRORED_REPEAT);
+                    break;
+                case TextureWrapping::ClampToBorder:
+                    glTexParameteri(target, axis_mapping[i], GL_CLAMP_TO_BORDER);
+                    break;
+                case TextureWrapping::ClampToEdge:
+                    glTexParameteri(target, axis_mapping[i], GL_CLAMP_TO_EDGE);
+                    break;
+                default:
+                    assert(false);
             }
         }
     }
 
-
-
     RenderPipeline::RenderPipeline(uint32_t buffers_capacity)
-        : slice_program_(
-            std::make_shared<VertexShader>(shaders_dir / "slice_vs.glsl"),
-            std::make_shared<FragmentShader>(shaders_dir / "slice_fs.glsl"))
+        : slice_program_(std::make_shared<VertexShader>(shaders_dir / "slice_vs.glsl"),
+                         std::make_shared<FragmentShader>(shaders_dir / "slice_fs.glsl"))
         , VAO_()
         , VBOs_(MakeArray<VertexBufferObject, Engine::Assets::VertexAttributesCount>(buffers_capacity))
         , EBO_(buffers_capacity)
         , camera_matrices_UBO_(sizeof(CameraMatrices))
         , unlit_programs_(shaders_dir / "global_unlit_vs_body.glsl", shaders_dir / "global_unlit_fs_body.glsl") {
-
         slice_program_.Bind();
         GLuint UBI = glGetUniformBlockIndex(slice_program_.ProgramId(), "CameraMatrices");
         assert(UBI != GL_INVALID_INDEX);
         slice_program_.Unbind();
     }
 
-    void RenderPipeline::Init() {
-        VAO_.Bind();
-    }
+    void RenderPipeline::Init() { VAO_.Bind(); }
 
     void RenderPipeline::Cleanup() {
         VAO_.Unbind();
@@ -137,7 +132,8 @@ namespace Core {
         uint32_t attribute_index = 0;
 
         VBOs_[VertexAttributePosition(VertexAttribute::Position)].Bind();
-        VBOs_[VertexAttributePosition(VertexAttribute::Position)].PopulateData(mesh_data.positions.data.get(), mesh_data.positions.ByteSize());
+        VBOs_[VertexAttributePosition(VertexAttribute::Position)].PopulateData(mesh_data.positions.data.get(),
+                                                                               mesh_data.positions.ByteSize());
         glEnableVertexAttribArray(attribute_index);
         glVertexAttribPointer(attribute_index, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
         ++attribute_index;
@@ -146,7 +142,8 @@ namespace Core {
             assert(mesh_data.colors);
 
             VBOs_[VertexAttributePosition(VertexAttribute::Color)].Bind();
-            VBOs_[VertexAttributePosition(VertexAttribute::Color)].PopulateData(mesh_data.colors.data.get(), mesh_data.colors.ByteSize());
+            VBOs_[VertexAttributePosition(VertexAttribute::Color)].PopulateData(mesh_data.colors.data.get(),
+                                                                                mesh_data.colors.ByteSize());
             glEnableVertexAttribArray(attribute_index);
             glVertexAttribPointer(attribute_index, 4, GL_UNSIGNED_BYTE, GL_TRUE, 4 * sizeof(uint8_t), (void*)0);
             ++attribute_index;
@@ -162,7 +159,8 @@ namespace Core {
             {
                 auto VBO_index = VertexAttributePosition(VertexAttribute::UV0) + binding.uv_index;
                 VBOs_[VBO_index].Bind();
-                VBOs_[VBO_index].PopulateData(mesh_data.uvs[binding.uv_index].data.get(), mesh_data.uvs[binding.uv_index].ByteSize());
+                VBOs_[VBO_index].PopulateData(mesh_data.uvs[binding.uv_index].data.get(),
+                                              mesh_data.uvs[binding.uv_index].ByteSize());
                 glEnableVertexAttribArray(attribute_index);
                 glVertexAttribPointer(attribute_index, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
                 ++attribute_index;
@@ -171,15 +169,23 @@ namespace Core {
             // Assign to texture slot 0
             texture_id_.SetActiveUnit(0);
             texture_id_.Bind();
-            
+
             SetTextureParameter<2>(binding.filtering);
             SetTextureParameter(binding.wrapping);
-            
+
             // TODO: different texture types
 
             const auto* texture = binding.texture_ref.GetAsset();
             assert(texture);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, texture->Width(), texture->Height(), 0, GL_RGBA, GL_UNSIGNED_BYTE, texture->Data());
+            glTexImage2D(GL_TEXTURE_2D,
+                         0,
+                         GL_RGBA,
+                         texture->Width(),
+                         texture->Height(),
+                         0,
+                         GL_RGBA,
+                         GL_UNSIGNED_BYTE,
+                         texture->Data());
             glGenerateMipmap(GL_TEXTURE_2D);
 
             {
@@ -215,7 +221,8 @@ namespace Core {
         bounded_attributes_count_ = attribute_index;
     }
 
-    void RenderPipeline::DrawElements(const Engine::Assets::Mesh* mesh, const Engine::Assets::MaterialUnlit* material) const {
+    void RenderPipeline::DrawElements(const Engine::Assets::Mesh* mesh,
+                                      const Engine::Assets::MaterialUnlit* material) const {
         const auto& sub_mesh = mesh->elements.sub_meshes[0];
 
         // TODO: those have to come from the material
@@ -223,34 +230,34 @@ namespace Core {
         SetFaceCulling(material->GetParameters().face_culling);
 
         switch (sub_mesh.element_type) {
-        case Engine::Assets::ElementType::Point:
-            glPolygonMode(GL_FRONT_AND_BACK, GL_POINT);
-            glDrawElements(GL_POINTS,
-                           sub_mesh.count,
-                           GL_UNSIGNED_INT,
-                           reinterpret_cast<const GLvoid*>(sub_mesh.start_index * sizeof(uint32_t)));
-            break;
-        case Engine::Assets::ElementType::Edge:
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-            glDrawElements(GL_LINES,
-                           sub_mesh.count,
-                           GL_UNSIGNED_INT,
-                           reinterpret_cast<const GLvoid*>(sub_mesh.start_index * sizeof(uint32_t)));
-            break;
-        case Engine::Assets::ElementType::Triangle:
-            // Override to triangles
-            if (material->GetParameters().wireframe_mode) {
+            case Engine::Assets::ElementType::Point:
+                glPolygonMode(GL_FRONT_AND_BACK, GL_POINT);
+                glDrawElements(GL_POINTS,
+                               sub_mesh.count,
+                               GL_UNSIGNED_INT,
+                               reinterpret_cast<const GLvoid*>(sub_mesh.start_index * sizeof(uint32_t)));
+                break;
+            case Engine::Assets::ElementType::Edge:
                 glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-            } else {
-                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-            }
-            glDrawElements(GL_TRIANGLES,
-                           sub_mesh.count,
-                           GL_UNSIGNED_INT,
-                           reinterpret_cast<const GLvoid*>(sub_mesh.start_index * sizeof(uint32_t)));
-            break;
-        default:
-            assert(false);
+                glDrawElements(GL_LINES,
+                               sub_mesh.count,
+                               GL_UNSIGNED_INT,
+                               reinterpret_cast<const GLvoid*>(sub_mesh.start_index * sizeof(uint32_t)));
+                break;
+            case Engine::Assets::ElementType::Triangle:
+                // Override to triangles
+                if (material->GetParameters().wireframe_mode) {
+                    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                } else {
+                    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                }
+                glDrawElements(GL_TRIANGLES,
+                               sub_mesh.count,
+                               GL_UNSIGNED_INT,
+                               reinterpret_cast<const GLvoid*>(sub_mesh.start_index * sizeof(uint32_t)));
+                break;
+            default:
+                assert(false);
         }
     }
 
@@ -268,11 +275,21 @@ namespace Core {
 
         SetTextureParameter<3>(Engine::Assets::TextureFiltering::Linear);
         // mirrored repeat to avoid false interpolation near borders
-        SetTextureParameter(math::vec3<Engine::Assets::TextureWrapping>{Engine::Assets::TextureWrapping::MirroredRepeat});
+        SetTextureParameter(
+            math::vec3<Engine::Assets::TextureWrapping>{Engine::Assets::TextureWrapping::MirroredRepeat});
 
         const auto* texture = sample.GetAsset();
         assert(texture);
-        glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA, texture->Width(), texture->Height(), texture->Depth(), 0, GL_RGBA, GL_FLOAT, texture->Data());
+        glTexImage3D(GL_TEXTURE_3D,
+                     0,
+                     GL_RGBA,
+                     texture->Width(),
+                     texture->Height(),
+                     texture->Depth(),
+                     0,
+                     GL_RGBA,
+                     GL_FLOAT,
+                     texture->Data());
         glGenerateMipmap(GL_TEXTURE_3D);
 
         {
@@ -306,7 +323,9 @@ namespace Core {
     }
 
     void RenderPipeline::ReserveLineSpace(Engine::Assets::SColor color, size_t count, bool persistent) {
-        auto reserve_space = [](std::unordered_map<Engine::Assets::SColor, std::vector<DebugLine>>& storage, Engine::Assets::SColor color, size_t count) {
+        auto reserve_space = [](std::unordered_map<Engine::Assets::SColor, std::vector<DebugLine>>& storage,
+                                Engine::Assets::SColor color,
+                                size_t count) {
             if (auto it = storage.find(color); it == storage.end()) {
                 storage.emplace(color, std::vector<DebugLine>{}).first->second.reserve(count);
             } else {
@@ -345,7 +364,9 @@ namespace Core {
 
         auto draw = [this](const std::unordered_map<SColor, std::vector<DebugLine>>& draw_map) {
             for (const auto& draw_batch : draw_map) {
-                VBOs_[VertexAttributePosition(VertexAttribute::Position)].PopulateData(draw_batch.second.data(), draw_batch.second.size() * sizeof(DebugLine));
+                VBOs_[VertexAttributePosition(VertexAttribute::Position)].PopulateData(draw_batch.second.data(),
+                                                                                       draw_batch.second.size() *
+                                                                                           sizeof(DebugLine));
                 glEnableVertexAttribArray(0);
                 glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
 
@@ -372,32 +393,32 @@ namespace Core {
         thread_local std::array<DebugLine, 12> lines;
         lines.fill({center, center});
         // along X
-        lines[0].start  += math::vec3<float>{ extent.x,  extent.y,  extent.z};
-        lines[0].end  += math::vec3<float>{-extent.x,  extent.y,  extent.z};
-        lines[1].start  += math::vec3<float>{ extent.x,  extent.y, -extent.z};
-        lines[1].end  += math::vec3<float>{-extent.x,  extent.y, -extent.z};
-        lines[2].start  += math::vec3<float>{ extent.x, -extent.y,  extent.z};
-        lines[2].end  += math::vec3<float>{-extent.x, -extent.y,  extent.z};
-        lines[3].start  += math::vec3<float>{ extent.x, -extent.y, -extent.z};
-        lines[3].end  += math::vec3<float>{-extent.x, -extent.y, -extent.z};
+        lines[0].start += math::vec3<float>{extent.x, extent.y, extent.z};
+        lines[0].end += math::vec3<float>{-extent.x, extent.y, extent.z};
+        lines[1].start += math::vec3<float>{extent.x, extent.y, -extent.z};
+        lines[1].end += math::vec3<float>{-extent.x, extent.y, -extent.z};
+        lines[2].start += math::vec3<float>{extent.x, -extent.y, extent.z};
+        lines[2].end += math::vec3<float>{-extent.x, -extent.y, extent.z};
+        lines[3].start += math::vec3<float>{extent.x, -extent.y, -extent.z};
+        lines[3].end += math::vec3<float>{-extent.x, -extent.y, -extent.z};
         // along Y
-        lines[4].start  += math::vec3<float>{ extent.x,  extent.y,  extent.z};
-        lines[4].end  += math::vec3<float>{ extent.x, -extent.y,  extent.z};
-        lines[5].start  += math::vec3<float>{ extent.x,  extent.y, -extent.z};
-        lines[5].end  += math::vec3<float>{ extent.x, -extent.y, -extent.z};
-        lines[6].start  += math::vec3<float>{-extent.x,  extent.y,  extent.z};
-        lines[6].end  += math::vec3<float>{-extent.x, -extent.y,  extent.z};
-        lines[7].start  += math::vec3<float>{-extent.x,  extent.y, -extent.z};
-        lines[7].end  += math::vec3<float>{-extent.x, -extent.y, -extent.z};
+        lines[4].start += math::vec3<float>{extent.x, extent.y, extent.z};
+        lines[4].end += math::vec3<float>{extent.x, -extent.y, extent.z};
+        lines[5].start += math::vec3<float>{extent.x, extent.y, -extent.z};
+        lines[5].end += math::vec3<float>{extent.x, -extent.y, -extent.z};
+        lines[6].start += math::vec3<float>{-extent.x, extent.y, extent.z};
+        lines[6].end += math::vec3<float>{-extent.x, -extent.y, extent.z};
+        lines[7].start += math::vec3<float>{-extent.x, extent.y, -extent.z};
+        lines[7].end += math::vec3<float>{-extent.x, -extent.y, -extent.z};
         // along Z
-        lines[8].start  += math::vec3<float>{ extent.x,  extent.y,  extent.z};
-        lines[8].end    += math::vec3<float>{ extent.x,  extent.y, -extent.z};
-        lines[9].start  += math::vec3<float>{ extent.x, -extent.y,  extent.z};
-        lines[9].end    += math::vec3<float>{ extent.x, -extent.y, -extent.z};
-        lines[10].start += math::vec3<float>{-extent.x,  extent.y,  extent.z};
-        lines[10].end   += math::vec3<float>{-extent.x,  extent.y, -extent.z};
-        lines[11].start += math::vec3<float>{-extent.x, -extent.y,  extent.z};
-        lines[11].end   += math::vec3<float>{-extent.x, -extent.y, -extent.z};
+        lines[8].start += math::vec3<float>{extent.x, extent.y, extent.z};
+        lines[8].end += math::vec3<float>{extent.x, extent.y, -extent.z};
+        lines[9].start += math::vec3<float>{extent.x, -extent.y, extent.z};
+        lines[9].end += math::vec3<float>{extent.x, -extent.y, -extent.z};
+        lines[10].start += math::vec3<float>{-extent.x, extent.y, extent.z};
+        lines[10].end += math::vec3<float>{-extent.x, extent.y, -extent.z};
+        lines[11].start += math::vec3<float>{-extent.x, -extent.y, extent.z};
+        lines[11].end += math::vec3<float>{-extent.x, -extent.y, -extent.z};
 
         DebugDrawPrimitive(lines, color, persistent);
     }
@@ -465,76 +486,78 @@ namespace Core {
             glEnable(GL_BLEND);
             glDepthMask(GL_FALSE);
             switch (mode) {
-            case Engine::Assets::BlendMode::Transparent:
-                glBlendEquation(GL_FUNC_ADD);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                break;
-            case Engine::Assets::BlendMode::PremultipliedAlpha:
-                glBlendEquation(GL_FUNC_ADD);
-                glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-                break;
-            case Engine::Assets::BlendMode::Add:
-                glBlendEquation(GL_FUNC_ADD);
-                glBlendFunc(GL_ONE, GL_ONE);
-                break;
-            case Engine::Assets::BlendMode::AddWeighted:
-                glBlendEquation(GL_FUNC_ADD);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-                break;
-            case Engine::Assets::BlendMode::Multiply:
-                glBlendEquation(GL_FUNC_ADD);
-                glBlendFunc(GL_DST_COLOR, GL_ZERO);
-                break;
-            case Engine::Assets::BlendMode::Multiply2:
-                glBlendEquation(GL_FUNC_ADD);
-                glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR);
-                break;
-            case Engine::Assets::BlendMode::Screen:
-                glBlendEquation(GL_FUNC_ADD);
-                glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR);
-                break;
-            case Engine::Assets::BlendMode::Subtract:
-                glBlendEquation(GL_FUNC_SUBTRACT);
-                glBlendFunc(GL_ONE, GL_ONE);
-                break;
-            case Engine::Assets::BlendMode::Darken:
-                glBlendEquation(GL_MIN);
-                break;
-            case Engine::Assets::BlendMode::Lighten:
-                glBlendEquation(GL_MAX);
-                break;
-            default:
-                assert(false && "unhandled BlendMode in RenderPipeline::SetBlendingMode");
-                break;
+                case Engine::Assets::BlendMode::Transparent:
+                    glBlendEquation(GL_FUNC_ADD);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                    break;
+                case Engine::Assets::BlendMode::PremultipliedAlpha:
+                    glBlendEquation(GL_FUNC_ADD);
+                    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+                    break;
+                case Engine::Assets::BlendMode::Add:
+                    glBlendEquation(GL_FUNC_ADD);
+                    glBlendFunc(GL_ONE, GL_ONE);
+                    break;
+                case Engine::Assets::BlendMode::AddWeighted:
+                    glBlendEquation(GL_FUNC_ADD);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                    break;
+                case Engine::Assets::BlendMode::Multiply:
+                    glBlendEquation(GL_FUNC_ADD);
+                    glBlendFunc(GL_DST_COLOR, GL_ZERO);
+                    break;
+                case Engine::Assets::BlendMode::Multiply2:
+                    glBlendEquation(GL_FUNC_ADD);
+                    glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR);
+                    break;
+                case Engine::Assets::BlendMode::Screen:
+                    glBlendEquation(GL_FUNC_ADD);
+                    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR);
+                    break;
+                case Engine::Assets::BlendMode::Subtract:
+                    glBlendEquation(GL_FUNC_SUBTRACT);
+                    glBlendFunc(GL_ONE, GL_ONE);
+                    break;
+                case Engine::Assets::BlendMode::Darken:
+                    glBlendEquation(GL_MIN);
+                    break;
+                case Engine::Assets::BlendMode::Lighten:
+                    glBlendEquation(GL_MAX);
+                    break;
+                default:
+                    assert(false && "unhandled BlendMode in RenderPipeline::SetBlendingMode");
+                    break;
             }
         }
     }
 
     void RenderPipeline::SetFaceCulling(Engine::Assets::FaceCulling mode) {
         switch (mode) {
-        case Engine::Assets::FaceCulling::None:
-            glDisable(GL_CULL_FACE);
-            break;
-        case Engine::Assets::FaceCulling::Back:
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_BACK);
-            break;
-        case Engine::Assets::FaceCulling::Front:
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_FRONT);
-            break;
-        case Engine::Assets::FaceCulling::Both:
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_FRONT_AND_BACK);
-            break;
-        default:
-            assert(false && "unhandled FaceCulling in RenderPipeline::SetFaceCulling");
-            break;
+            case Engine::Assets::FaceCulling::None:
+                glDisable(GL_CULL_FACE);
+                break;
+            case Engine::Assets::FaceCulling::Back:
+                glEnable(GL_CULL_FACE);
+                glCullFace(GL_BACK);
+                break;
+            case Engine::Assets::FaceCulling::Front:
+                glEnable(GL_CULL_FACE);
+                glCullFace(GL_FRONT);
+                break;
+            case Engine::Assets::FaceCulling::Both:
+                glEnable(GL_CULL_FACE);
+                glCullFace(GL_FRONT_AND_BACK);
+                break;
+            default:
+                assert(false && "unhandled FaceCulling in RenderPipeline::SetFaceCulling");
+                break;
         }
     }
 
     void RenderPipeline::DebugDrawPrimitive(std::span<DebugLine> lines, Engine::Assets::SColor color, bool persistent) {
-        auto insert_draw = [](std::unordered_map<Engine::Assets::SColor, std::vector<DebugLine>>& storage, std::span<DebugLine> lines, Engine::Assets::SColor color) {
+        auto insert_draw = [](std::unordered_map<Engine::Assets::SColor, std::vector<DebugLine>>& storage,
+                              std::span<DebugLine> lines,
+                              Engine::Assets::SColor color) {
             if (auto it = storage.find(color); it == storage.end()) {
                 storage.emplace(color, std::vector<DebugLine>{lines.begin(), lines.end()});
             } else {
@@ -549,4 +572,4 @@ namespace Core {
         }
     }
 
-}
+} // namespace Core

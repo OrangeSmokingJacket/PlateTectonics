@@ -26,5 +26,4 @@ namespace math::impl {
         archive(cereal::binary_data(mat.data(), sizeof(mat)));
     }
 
-
-}
+} // namespace math::impl

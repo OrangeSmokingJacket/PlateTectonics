@@ -69,8 +69,7 @@ namespace utils {
 
     UUIDv4 GenerateUUIDv4();
 
-
-}
+} // namespace utils
 
 namespace std {
     template <>
@@ -82,4 +81,4 @@ namespace std {
             return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
         }
     };
-}
+} // namespace std

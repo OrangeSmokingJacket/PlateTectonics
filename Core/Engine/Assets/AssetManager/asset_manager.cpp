@@ -13,7 +13,6 @@
 // temp for setup
 #include <Core/Engine/Assets/Base/default_assets.hpp>
 
-
 namespace Core::Engine::Assets {
 
     static const std::filesystem::path assets_root_dir = std::filesystem::path(ASSETS_DIR).make_preferred();
@@ -29,7 +28,6 @@ namespace Core::Engine::Assets {
         archive(entry.asset_type, path_str);
         entry.path = path_str;
     }
-
 
     AssetManager::Entry::Entry(AssetType type, const std::filesystem::path& path)
         : asset_type(type)
@@ -52,23 +50,17 @@ namespace Core::Engine::Assets {
         return *this;
     }
 
-    bool AssetManager::Entry::InMemory() const noexcept {
-        return path.empty();
-    }
+    bool AssetManager::Entry::InMemory() const noexcept { return path.empty(); }
 
     AssetManager::AssetManager(utils::DefaultThreadPool* thread_pool)
-        :thread_pool_(thread_pool) {
+        : thread_pool_(thread_pool) {
         static std::once_flag static_setup_flag;
-        std::call_once(static_setup_flag, [this](){ s_asset_manager_ = this; });
+        std::call_once(static_setup_flag, [this]() { s_asset_manager_ = this; });
     }
 
-    AssetManager::~AssetManager() {
-        s_asset_manager_ = nullptr;
-    }
+    AssetManager::~AssetManager() { s_asset_manager_ = nullptr; }
 
-    bool AssetManager::Exists(AssetID ID) const noexcept {
-        return entries_.contains(ID);
-    }
+    bool AssetManager::Exists(AssetID ID) const noexcept { return entries_.contains(ID); }
 
     const Asset* AssetManager::GetAsset(AssetID ID) {
         assert(Exists(ID));
@@ -93,7 +85,7 @@ namespace Core::Engine::Assets {
         Entry* entry = &entries_.find(ID)->second;
         if (!entry->asset_data) {
             // There is no need to lock map, because it is stable on inserts/erases
-            thread_pool_->Enqueue([entry](){ LoadAsset(entry); });
+            thread_pool_->Enqueue([entry]() { LoadAsset(entry); });
         }
     }
 
@@ -129,15 +121,14 @@ namespace Core::Engine::Assets {
         auto it = entries_.find(ID);
         assert(it->second.InMemory());
         it->second.path = path;
-	    // TODO: make async
+        // TODO: make async
         SaveAsset(it->second.asset_data.get(), assets_root_dir / path);
     }
 
     void AssetManager::LoadAssetsEntries() {
         for (const auto& entry : std::filesystem::recursive_directory_iterator(assets_root_dir)) {
             // Metadata files are skipped, to avoid dealing with dangling files.
-            if (entry.is_directory() ||
-                entry.path().extension() == metadata_extension) {
+            if (entry.is_directory() || entry.path().extension() == metadata_extension) {
                 continue;
             }
             // Register assets have to have 'metadata_extension' file next to them
@@ -152,9 +143,7 @@ namespace Core::Engine::Assets {
         }
     }
 
-    AssetManager* AssetManager::Get() {
-        return s_asset_manager_;
-    }
+    AssetManager* AssetManager::Get() { return s_asset_manager_; }
 
     void AssetManager::LoadAsset(Entry* entry) {
         assert(entry);
@@ -164,4 +153,4 @@ namespace Core::Engine::Assets {
         entry->asset_data = Assets::LoadAsset(entry->asset_type, assets_root_dir / entry->path);
     }
 
-}
+} // namespace Core::Engine::Assets

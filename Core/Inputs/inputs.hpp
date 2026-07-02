@@ -141,4 +141,4 @@ namespace Core::Inputs {
 
     //TODO: scroll wheel input
 
-}
+} // namespace Core::Inputs

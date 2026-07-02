@@ -5,11 +5,7 @@
 namespace Core::Engine::Assets {
 
     AssetHeader ConstructHeader(const Asset* asset, uint32_t version) {
-        return AssetHeader{
-            .storage_version = version,
-            .asset_type = asset->GetAssetType(),
-            .ID = asset->ID
-        };
+        return AssetHeader{.storage_version = version, .asset_type = asset->GetAssetType(), .ID = asset->ID};
     }
 
     AssetHeader ReadHeder(std::filesystem::path metadata_path) {
@@ -38,17 +34,17 @@ namespace Core::Engine::Assets {
 
     std::unique_ptr<Asset> LoadAsset(AssetType type, const std::filesystem::path& source_path) {
         switch (type) {
-        case AssetType::Mesh:
-            return LoadMesh(source_path);
-        case AssetType::MaterialUnlit:
-            return LoadMaterialUnlit(source_path);
-        case AssetType::Texture2D:
-            return LoadTexture2D(source_path);
-        case AssetType::Texture2Df:
-            return LoadTexture2Df(source_path);
-        default:
-            assert(false && "unhandled AssetType in LoadImportedAsset");
-            return nullptr;
+            case AssetType::Mesh:
+                return LoadMesh(source_path);
+            case AssetType::MaterialUnlit:
+                return LoadMaterialUnlit(source_path);
+            case AssetType::Texture2D:
+                return LoadTexture2D(source_path);
+            case AssetType::Texture2Df:
+                return LoadTexture2Df(source_path);
+            default:
+                assert(false && "unhandled AssetType in LoadImportedAsset");
+                return nullptr;
         }
     }
-}
+} // namespace Core::Engine::Assets

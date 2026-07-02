@@ -24,4 +24,4 @@ namespace Core::Engine {
         size_t next_id_{0};
     };
 
-}
+} // namespace Core::Engine
