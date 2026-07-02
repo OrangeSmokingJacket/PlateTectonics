@@ -2,6 +2,7 @@
 
 #include <Core/Engine/Assets/Base/base.hpp>
 #include <Utils/buffer_utils.hpp>
+#include <Utils/thread_pool.hpp>
 
 #include <atomic>
 #include <cstring>
@@ -39,7 +40,7 @@ namespace Core::Engine::Assets {
 		    bool InMemory() const noexcept;
 		};
 
-	    explicit AssetManager();
+	    explicit AssetManager(utils::DefaultThreadPool* thread_pool);
 	    ~AssetManager();
 
 		// Check if AssetManager has that ID
@@ -53,9 +54,11 @@ namespace Core::Engine::Assets {
         [[nodiscard]] AssetID RegisterAsset(std::unique_ptr<Asset>&& asset, std::filesystem::path path = {});
 
 		// Asynchronously loads asset in memory
+	    // TODO: add variant returning a future
 		void PreloadAsset(AssetID ID);
 		// Asynchronously loads asset in memory and invokes callback
-		void PreloadAsset(AssetID ID, const std::function<void(const Asset*)>& callback);
+	    // Call back will be called from worker thread
+		void PreloadAsset(AssetID ID, std::function<void(const Asset*)>&& callback);
 		// Forcefully deallocates Asset data for Entry
 	    // If Entry is 'in-memory' -> removes it entirely
 		void FreeAsset(AssetID ID);
@@ -81,6 +84,7 @@ namespace Core::Engine::Assets {
 
         inline static AssetManager* s_asset_manager_ = nullptr;
 
+	    utils::DefaultThreadPool* thread_pool_;
 		std::unordered_map<AssetID, Entry> entries_;
 		// TODO: multiple AssetID to one pack
 		//std::unordered_map<AssetID, EntriesPack> entries_;

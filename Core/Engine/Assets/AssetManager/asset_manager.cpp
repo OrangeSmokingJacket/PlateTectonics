@@ -56,7 +56,8 @@ namespace Core::Engine::Assets {
         return path.empty();
     }
 
-    AssetManager::AssetManager() {
+    AssetManager::AssetManager(utils::DefaultThreadPool* thread_pool)
+        :thread_pool_(thread_pool) {
         static std::once_flag static_setup_flag;
         std::call_once(static_setup_flag, [this](){ s_asset_manager_ = this; });
     }
@@ -85,6 +86,27 @@ namespace Core::Engine::Assets {
         assert(!entries_.contains(ID));
         entries_.emplace(ID, Entry{std::move(asset), std::move(path)});
         return ID;
+    }
+
+    void AssetManager::PreloadAsset(AssetID ID) {
+        assert(Exists(ID));
+        Entry* entry = &entries_.find(ID)->second;
+        if (!entry->asset_data) {
+            // There is no need to lock map, because it is stable on inserts/erases
+            thread_pool_->Enqueue([entry](){ LoadAsset(entry); });
+        }
+    }
+
+    void AssetManager::PreloadAsset(AssetID ID, std::function<void(const Asset*)>&& callback) {
+        assert(Exists(ID));
+        Entry* entry = &entries_.find(ID)->second;
+        if (!entry->asset_data) {
+            // There is no need to lock map, because it is stable on inserts/erases
+            thread_pool_->Enqueue([entry, cb = std::move(callback)]() {
+                LoadAsset(entry);
+                cb(entry->asset_data.get());
+            });
+        }
     }
 
     void AssetManager::FreeAsset(AssetID ID) {
