@@ -66,7 +66,7 @@ constexpr size_t BUFFER_ALLOCATION_SIZE = 32 * 1024 * 1024; // 32 MB
 
 MainLayer::MainLayer()
     : pipeline_(BUFFER_ALLOCATION_SIZE)
-    , mantle_sim_(&pipeline_) {
+    , mantle_sim_(&pipeline_, &thread_pool_) {
 
     // TODO: this has to be done async
     asset_manager_.LoadAssetsEntries();

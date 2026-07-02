@@ -2,8 +2,11 @@
 
 #include <Core/Renderer/renderer.hpp>
 #include <Math/scalar_ops.hpp>
+#include <Utils/compiler_utils.hpp>
 
 #include <algorithm>
+#include <future>
+#include <latch>
 
 template <Dimensions GridDimensions>
 constexpr Index3D ToIndex3D(size_t linear_index) {
@@ -30,13 +33,14 @@ std::array<SimulationDomain, sizeof...(Indices)> InitializeDomainArray(std::inde
     return {SimulationDomain(ToIndex3D<EulerFluidSim::domains>(Indices))...};
 }
 
-#define ForEachDomain(command)                                                                                         \
-    for(auto& domain : *domains_) {                                                                                    \
-        domain.command;                                                                                                \
-    }
+// TODO: main thread is idle, while worker threads crunch through domains.
+// Coroutines could help with than
+// Ideally main thread should also participate in computations
+// for 8 worker thread utilization is 8/9 or ~88.8%, which is acceptable for now
 
-EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer)
-	: domains_(std::make_unique<std::array<SimulationDomain, Cardinality(domains)>>(InitializeDomainArray(std::make_index_sequence<Cardinality(domains)>())))
+EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThreadPool* thread_pool)
+    : thread_pool_(thread_pool)
+	, domains_(std::make_unique<std::array<SimulationDomain, Cardinality(domains)>>(InitializeDomainArray(std::make_index_sequence<Cardinality(domains)>())))
     , render_texture_(Core::Engine::Assets::AssetManager::Get()->RegisterAsset(std::make_unique<Core::Engine::Assets::Texture3Df>(full_dimensions.x, full_dimensions.y, full_dimensions.z))) {
 	world_origin_offset_.x = -(full_dimensions.x * SimulationConstants::scale * 0.5);
 	world_origin_offset_.y = -(full_dimensions.y * SimulationConstants::scale * 0.5);
@@ -54,13 +58,50 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer)
 }
 
 void EulerFluidSim::Update(float delta_time) {
-	// Advection
-    ForEachDomain(AdvectVelocities());
+    // TODO: Combine temperature advection and velocity advection to reduce sampling and sync calls
+    // Advection
+    {
+        std::latch sync_latch{Cardinality(domains)};
+
+        for (size_t i = 0; i < Cardinality(domains); ++i) {
+            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+            thread_pool_->Enqueue([domain_ref, &sync_latch]() {
+                domain_ref.get().AdvectVelocities();
+                sync_latch.count_down();
+            });
+        }
+
+        sync_latch.wait();
+    }
     SyncVelocities();
-    ForEachDomain(AdvectTemperature());
+    {
+        std::latch sync_latch{Cardinality(domains)};
+
+        for (size_t i = 0; i < Cardinality(domains); ++i) {
+            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+            thread_pool_->Enqueue([domain_ref, &sync_latch]() {
+                domain_ref.get().AdvectTemperature();
+                sync_latch.count_down();
+            });
+        }
+
+        sync_latch.wait();
+    }
     SyncGridValues(&SimulationDomain::cell_temperature_);
-	// Forces
-    ForEachDomain(ApplyBuoyancy(this));
+    // Forces
+    {
+        std::latch sync_latch{Cardinality(domains)};
+
+        for (size_t i = 0; i < Cardinality(domains); ++i) {
+            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+            thread_pool_->Enqueue([domain_ref, &sync_latch, this]() {
+                domain_ref.get().ApplyBuoyancy(this);
+                sync_latch.count_down();
+            });
+        }
+
+        sync_latch.wait();
+    }
     SyncVelocities();
 	// Projection
 	ProjectVelocities();
@@ -142,34 +183,45 @@ const Core::Engine::Assets::AssetRef<Core::Engine::Assets::Texture3Df>& EulerFlu
 
 void EulerFluidSim::DebugRandomizeBorderVelocities() {
 	// TODO: Use smooth noise function to get more realistic results
-	// Could be optimized, but it is a debug function anyway
-    for (auto& domain : *domains_) {
-        for (auto it = domain.velocities_x_->flat_begin(); it != domain.velocities_x_->flat_end(); ++it) {
-            *it = (math::random<double>() * 2 - 1.0) * SimulationConstants::scale;
-        }
-        for (auto it = domain.velocities_y_->flat_begin(); it != domain.velocities_y_->flat_end(); ++it) {
-            *it = (math::random<double>() * 2 - 1.0) * SimulationConstants::scale;
-        }
-        for (auto it = domain.velocities_z_->flat_begin(); it != domain.velocities_z_->flat_end(); ++it) {
-            *it = (math::random<double>() * 2 - 1.0) * SimulationConstants::scale;
-        }
+    // Could be optimized, but it is a debug function anyway
 
-        // Set all solid/solid and solid/fluid borders to 0
-        for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
-            for (size_t y = 0; y < SimulationDomain::dimensions.y; ++y) {
-                for (size_t z = 0; z < SimulationDomain::dimensions.z; ++z) {
-                    if (IsSolidCell(WorldIndex(domain.domain_index_, Index3D{x, y, z}))) {
-                        (*domain.velocities_x_)[x][y][z] = 0.0;
-                        (*domain.velocities_x_)[x + 1][y][z] = 0.0;
-                        (*domain.velocities_y_)[x][y][z] = 0.0;
-                        (*domain.velocities_y_)[x][y + 1][z] = 0.0;
-                        (*domain.velocities_z_)[x][y][z] = 0.0;
-                        (*domain.velocities_z_)[x][y][z + 1] = 0.0;
+    std::latch sync_latch{Cardinality(domains)};
+
+    for (size_t i = 0; i < Cardinality(domains); ++i) {
+        std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+        thread_pool_->Enqueue([domain_ref, &sync_latch]() {
+            auto& domain = domain_ref.get();
+            for (auto it = domain.velocities_x_->flat_begin(); it != domain.velocities_x_->flat_end(); ++it) {
+                *it = (math::random<double>() * 2 - 1.0) * SimulationConstants::scale;
+            }
+            for (auto it = domain.velocities_y_->flat_begin(); it != domain.velocities_y_->flat_end(); ++it) {
+                *it = (math::random<double>() * 2 - 1.0) * SimulationConstants::scale;
+            }
+            for (auto it = domain.velocities_z_->flat_begin(); it != domain.velocities_z_->flat_end(); ++it) {
+                *it = (math::random<double>() * 2 - 1.0) * SimulationConstants::scale;
+            }
+
+            // Set all solid/solid and solid/fluid borders to 0
+            for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
+                for (size_t y = 0; y < SimulationDomain::dimensions.y; ++y) {
+                    for (size_t z = 0; z < SimulationDomain::dimensions.z; ++z) {
+                        if (IsSolidCell(WorldIndex(domain.domain_index_, Index3D{ x, y, z }))) {
+                            (*domain.velocities_x_)[x][y][z] = 0.0;
+                            (*domain.velocities_x_)[x + 1][y][z] = 0.0;
+                            (*domain.velocities_y_)[x][y][z] = 0.0;
+                            (*domain.velocities_y_)[x][y + 1][z] = 0.0;
+                            (*domain.velocities_z_)[x][y][z] = 0.0;
+                            (*domain.velocities_z_)[x][y][z + 1] = 0.0;
+                        }
                     }
                 }
             }
-        }
+
+            sync_latch.count_down();
+        });
     }
+
+    sync_latch.wait();
 
     SyncVelocities();
     for (auto& domain : *domains_) {
@@ -220,7 +272,7 @@ static constexpr std::pair<size_t, size_t> DestinationRange(int dir, size_t axis
     case 0:
         return {SimulationDomain::halo_size[axis_index], SimulationDomain::stripped_dimensions[axis_index] + Stagger[axis_index]};
     }
-    throw std::runtime_error("DestinationRange got incorrect direction");
+    utils::unreachable();
 }
 
 template <math::vec3<size_t> Stagger>
@@ -233,10 +285,11 @@ static constexpr  size_t SourceAdjustment(int dir, size_t axis_index) {
     case 0:
         return SimulationDomain::halo_size[axis_index];
     }
-    throw std::runtime_error("SourceAdjustment got incorrect direction");
+    utils::unreachable();
 }
 
 // for MAC grids correct Stagger has to be passed
+// Could be parallelized, since writes are done only to a local halos
 template <typename Grid, math::vec3<size_t> Stagger = math::vec3<size_t>{0, 0, 0}>
 void SyncGridValues(std::array<SimulationDomain, Cardinality(EulerFluidSim::domains)>& domains, std::unique_ptr<Grid> SimulationDomain::* grid) {
     for (size_t dx = 0; dx < EulerFluidSim::domains.x; ++dx) {
@@ -301,109 +354,268 @@ void EulerFluidSim::SyncCoefficients() {
 }
 
 void EulerFluidSim::SetInitialTemperature() {
-    for (auto& domain : *domains_) {
-        // set all to ambient, except lower boundary
-        domain.cell_temperature_->SetTo(ambient_temperature_);
+    std::latch sync_latch{ Cardinality(domains) };
 
-        if (domain.domain_index_.y == 0) {
-            for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
-                for (size_t z = 0; z < SimulationDomain::dimensions.z; ++z) {
-                    (*domain.cell_temperature_)[x][0][z] = core_temperature_;
+    for (size_t i = 0; i < Cardinality(domains); ++i) {
+        std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+        thread_pool_->Enqueue([domain_ref, &sync_latch, core_temp = core_temperature_, ambient_temp = ambient_temperature_, crust_temp = crust_temperature_]() {
+            auto& domain = domain_ref.get();
+            // set all to ambient, except lower boundary
+            domain.cell_temperature_->SetTo(ambient_temp);
+
+            if (domain.domain_index_.y == 0) {
+                for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
+                    for (size_t z = 0; z < SimulationDomain::dimensions.z; ++z) {
+                        (*domain.cell_temperature_)[x][0][z] = core_temp;
+                    }
                 }
             }
-        } else if (domain.domain_index_.y == domains.y - 1) {
-            for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
-                for (size_t z = 0; z < SimulationDomain::dimensions.z; ++z) {
-                    (*domain.cell_temperature_)[x][SimulationDomain::dimensions.y - 1][z] = crust_temperature_;
+            if (domain.domain_index_.y == domains.y - 1) {
+                for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
+                    for (size_t z = 0; z < SimulationDomain::dimensions.z; ++z) {
+                        (*domain.cell_temperature_)[x][SimulationDomain::dimensions.y - 1][z] = crust_temp;
+                    }
                 }
             }
-        }
 
-        domain.cell_temperature_temp_->CopyFrom(*domain.cell_temperature_);
+            domain.cell_temperature_temp_->CopyFrom(*domain.cell_temperature_);
+
+            sync_latch.count_down();
+        });
     }
+
+    sync_latch.wait();
 }
 
 
 void EulerFluidSim::PCG() {
-    ForEachDomain(cell_pressure_->SetToZero());
-	// If divergence is low enough zero pressure will be close enough
+    // If divergence is low enough zero pressure will be close enough
     // It might be faster in some cases to skip this check
-	double maxDivergence = std::numeric_limits<double>::lowest();
-	double minDivergence = std::numeric_limits<double>::max();
-    for (const auto& domain : *domains_) {
-        auto min_max = domain.DivergenceMinMax();
-        minDivergence = std::min(minDivergence, min_max.first);
-        maxDivergence = std::max(maxDivergence, min_max.second);
+    double maxDivergence = std::numeric_limits<double>::lowest();
+    double minDivergence = std::numeric_limits<double>::max();
+    {
+        std::vector<std::future<MinMax>> min_max_results;
+        min_max_results.reserve(Cardinality(domains));
+
+        for (size_t i = 0; i < Cardinality(domains); ++i) {
+            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+            auto promise = std::make_shared<std::promise<MinMax>>();
+            min_max_results.push_back(promise->get_future());
+            thread_pool_->Enqueue([domain_ref, promise]() {
+                auto& domain = domain_ref.get();
+                // initial guess, past values may be also viable here
+                domain.cell_pressure_->SetToZero();
+                promise->set_value(domain.DivergenceMinMax());
+            });
+        }
+
+        for (auto& res : min_max_results) {
+            // TODO: order of results are undefined, and there could be a value ready, but main thread is waiting for a specific one
+            auto min_max = res.get();
+            minDivergence = std::min(minDivergence, min_max.min);
+            maxDivergence = std::max(maxDivergence, min_max.max);
+        }
     }
+
 	if (fabs(maxDivergence) < std::numeric_limits<double>::epsilon() && fabs(minDivergence) < std::numeric_limits<double>::epsilon())
 		return;
 
-    ForEachDomain(residual_->CopyFrom(*domain.cell_pressure_divergence_));
-    ForEachDomain(ApplyPreconditioner());
-    SyncGridValues(&SimulationDomain::auxiliary_);
-    ForEachDomain(search_->CopyFrom(*domain.auxiliary_));
 
-	double sigma = 0;
-    for (const auto& domain : *domains_) {
-        sigma += domain.RealCellsDotProduct(&SimulationDomain::auxiliary_, &SimulationDomain::residual_);
+    {
+        std::latch sync_latch{Cardinality(domains)};
+
+        for (size_t i = 0; i < Cardinality(domains); ++i) {
+            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+            thread_pool_->Enqueue([domain_ref, &sync_latch]() {
+                auto& domain = domain_ref.get();
+                domain.residual_->CopyFrom(*domain.cell_pressure_divergence_);
+                domain.ApplyPreconditioner();
+                sync_latch.count_down();
+            });
+        }
+
+        sync_latch.wait();
+    }
+
+    SyncGridValues(&SimulationDomain::auxiliary_);
+    double sigma = 0;
+    {
+        std::vector<std::future<double>> partial_dot_products;
+        partial_dot_products.reserve(Cardinality(domains));
+
+        for (size_t i = 0; i < Cardinality(domains); ++i) {
+            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+            auto promise = std::make_shared<std::promise<double>>();
+            partial_dot_products.push_back(promise->get_future());
+            thread_pool_->Enqueue([domain_ref, promise]() {
+                auto& domain = domain_ref.get();
+                domain.search_->CopyFrom(*domain.auxiliary_);
+                promise->set_value(domain.RealCellsDotProduct(&SimulationDomain::auxiliary_, &SimulationDomain::residual_));
+            });
+        }
+
+        for (auto& res : partial_dot_products) {
+            sigma += res.get();
+        }
     }
 
 	for (last_PCG_iteration_count = 0; last_PCG_iteration_count < SimulationConstants::max_solver_iterations; last_PCG_iteration_count++) {
 	    assert(!std::isinf(sigma));
 	    assert(!std::isnan(sigma));
-	    ForEachDomain(ApplyCoefficients());
-        SyncGridValues(&SimulationDomain::auxiliary_);
+        {
+            std::latch sync_latch{Cardinality(domains)};
 
-	    double dot_product = 0;
-	    for (const auto& domain : *domains_) {
-	        dot_product += domain.RealCellsDotProduct(&SimulationDomain::auxiliary_, &SimulationDomain::search_);
-	    }
+            for (size_t i = 0; i < Cardinality(domains); ++i) {
+                std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+                thread_pool_->Enqueue([domain_ref, &sync_latch]() {
+                    auto& domain = domain_ref.get();
+                    domain.ApplyCoefficients();
+                    sync_latch.count_down();
+                });
+            }
+
+            sync_latch.wait();
+        }
+
+        SyncGridValues(&SimulationDomain::auxiliary_);
+        double dot_product = 0;
+        {
+            std::vector<std::future<double>> partial_dot_products;
+            partial_dot_products.reserve(Cardinality(domains));
+
+            for (size_t i = 0; i < Cardinality(domains); ++i) {
+                std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+                auto promise = std::make_shared<std::promise<double>>();
+                partial_dot_products.push_back(promise->get_future());
+                thread_pool_->Enqueue([domain_ref, promise]() {
+                    auto& domain = domain_ref.get();
+                    promise->set_value(domain.RealCellsDotProduct(&SimulationDomain::auxiliary_, &SimulationDomain::search_));
+                });
+            }
+
+            for (auto& res : partial_dot_products) {
+                dot_product += res.get();
+            }
+        }
+
 	    double alpha = sigma / dot_product;
-	    for (auto& domain : *domains_) {
-	        for (size_t j = 0; j < domain.cell_pressure_->cardinality; j++)
-	        {
-	            *(domain.cell_pressure_->flat_data() + j) += *(domain.search_->flat_data() + j) * alpha;
-	            *(domain.residual_->flat_data() + j) -= *(domain.auxiliary_->flat_data() + j) * alpha;
+
+        {
+            std::vector<std::future<double>> partial_length;
+            partial_length.reserve(Cardinality(domains));
+
+            for (size_t i = 0; i < Cardinality(domains); ++i) {
+                std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+                auto promise = std::make_shared<std::promise<double>>();
+                partial_length.push_back(promise->get_future());
+                thread_pool_->Enqueue([domain_ref, promise, alpha]() {
+                    auto& domain = domain_ref.get();
+                    for (size_t j = 0; j < domain.cell_pressure_->cardinality; ++j) {
+                        *(domain.cell_pressure_->flat_data() + j) += *(domain.search_->flat_data() + j) * alpha;
+                        *(domain.residual_->flat_data() + j) -= *(domain.auxiliary_->flat_data() + j) * alpha;
+                    }
+                    promise->set_value(domain.residual_->Length());
+                });
+            }
+
+	        double total_error = 0.0;
+            for (auto& res : partial_length) {
+                total_error += res.get();
+            }
+
+            if (total_error < SimulationConstants::solver_tolerance)
+                break;
+        }
+
+	    {
+	        std::latch sync_latch{Cardinality(domains)};
+
+	        for (size_t i = 0; i < Cardinality(domains); ++i) {
+	            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+	            thread_pool_->Enqueue([domain_ref, &sync_latch]() {
+                    auto& domain = domain_ref.get();
+                    domain.ApplyPreconditioner();
+                    sync_latch.count_down();
+                });
 	        }
+
+	        sync_latch.wait();
 	    }
-
-	    bool result_is_good_enough = true;
-	    for (const auto& domain : *domains_) {
-	        if (domain.residual_->Length() > SimulationConstants::solver_tolerance) {
-	            result_is_good_enough = false;
-	            break;
-	        }
-	    }
-
-		if (result_is_good_enough)
-			break;
-
-	    ForEachDomain(ApplyPreconditioner());
-        SyncGridValues(&SimulationDomain::auxiliary_);
+	    SyncGridValues(&SimulationDomain::auxiliary_);
 
 	    double sigma_new = 0;
-	    for (const auto& domain : *domains_) {
-            sigma_new += domain.RealCellsDotProduct(&SimulationDomain::auxiliary_, &SimulationDomain::residual_);
-	    }
-		double beta = sigma_new / sigma;
-	    for (auto& domain : *domains_) {
-	        for (size_t j = 0; j < domain.search_->cardinality; j++)
-	        {
-	            *(domain.search_->flat_data() + j) = *(domain.auxiliary_->flat_data() + j) + *(domain.search_->flat_data() + j) * beta;
+	    {
+	        std::vector<std::future<double>> partial_dot_products;
+	        partial_dot_products.reserve(Cardinality(domains));
+
+	        for (size_t i = 0; i < Cardinality(domains); ++i) {
+	            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+	            auto promise = std::make_shared<std::promise<double>>();
+	            partial_dot_products.push_back(promise->get_future());
+	            thread_pool_->Enqueue([domain_ref, promise]() {
+                    auto& domain = domain_ref.get();
+                    promise->set_value(domain.RealCellsDotProduct(&SimulationDomain::auxiliary_, &SimulationDomain::residual_));
+                });
 	        }
+
+	        for (auto& res : partial_dot_products) {
+	            sigma_new += res.get();
+	        }
+	    }
+	    double beta = sigma_new / sigma;
+	    {
+	        std::latch sync_latch{Cardinality(domains)};
+
+	        for (size_t i = 0; i < Cardinality(domains); ++i) {
+	            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+	            thread_pool_->Enqueue([domain_ref, &sync_latch, beta]() {
+                    auto& domain = domain_ref.get();
+                    for (size_t j = 0; j < domain.search_->cardinality; ++j) {
+                        *(domain.search_->flat_data() + j) = *(domain.auxiliary_->flat_data() + j) + *(domain.search_->flat_data() + j) * beta;
+                    }
+                    sync_latch.count_down();
+                });
+	        }
+
+	        sync_latch.wait();
 	    }
 
 	    //assert(sigma_new < sigma);
 		sigma = sigma_new;
 	}
+    SyncGridValues(&SimulationDomain::cell_pressure_);
 	// TODO: Log used iterations properly
 }
 
 void EulerFluidSim::ProjectVelocities() {
-    ForEachDomain(CalculateDivergence());
+    {
+        std::latch sync_latch{Cardinality(domains)};
+
+        for (size_t i = 0; i < Cardinality(domains); ++i) {
+            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+            thread_pool_->Enqueue([domain_ref, &sync_latch]() {
+                domain_ref.get().CalculateDivergence();
+                sync_latch.count_down();
+            });
+        }
+
+        sync_latch.wait();
+    }
     SyncGridValues(&SimulationDomain::cell_pressure_divergence_);
 	PCG();
-    ForEachDomain(UpdateVelocities());
+    {
+        std::latch sync_latch{Cardinality(domains)};
+
+        for (size_t i = 0; i < Cardinality(domains); ++i) {
+            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
+            thread_pool_->Enqueue([domain_ref, &sync_latch]() {
+                domain_ref.get().UpdateVelocities();
+                sync_latch.count_down();
+            });
+        }
+
+        sync_latch.wait();
+    }
     SyncVelocities();
 }
 
@@ -488,17 +700,18 @@ void EulerFluidSim::DrawBoundaryVelocities(Core::RenderPipeline* renderer, bool 
 
 void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, bool persistent) const
 {
-	math::vec3<float> nPos;
-	math::vec3<float> interpolationPos;
+    // 3 lines per arrow, but EulerFluidSim shouldn't know about that
+    auto arrow_count = math::cube(cell_subdivision) * Cardinality(full_dimensions) * 3;
+    renderer->ReserveLineSpace(interpolated_velocity_color_, arrow_count, persistent);
+
 	// border cells will have 0 velocity anyway, so we can skip them
-    // TODO: skip halo cells
 	if (cell_subdivision == 1) {
 	    for (const auto& domain : *domains_) {
-	        for (uint64_t x = 1; x < SimulationDomain::dimensions.x - 1; ++x) {
-	            for (uint64_t y = 1; y < SimulationDomain::dimensions.y - 1; ++y) {
-	                for (uint64_t z = 1; z < SimulationDomain::dimensions.z - 1; ++z) {
-	                    nPos = math::vec3<float>{static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)} + ValueGridOffset;
-	                    interpolationPos = domain.DenormalizePosition(nPos);
+	        for (uint64_t x = SimulationDomain::halo_size.x; x < SimulationDomain::dimensions.x - SimulationDomain::halo_size.x; ++x) {
+	            for (uint64_t y = SimulationDomain::halo_size.y; y < SimulationDomain::dimensions.y - SimulationDomain::halo_size.y; ++y) {
+	                for (uint64_t z = SimulationDomain::halo_size.z; z < SimulationDomain::dimensions.z - SimulationDomain::halo_size.z; ++z) {
+                        math::vec3<float> nPos = math::vec3<float>{static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)} + ValueGridOffset;
+                        math::vec3<float> interpolationPos = domain.DenormalizePosition(nPos);
 	                    math::vec3<float> velocity = domain.SampleVelocity(nPos);
 	                    interpolationPos +=  world_origin_offset_ +static_cast<math::vec3<float>>(domain.domain_index_ * SimulationDomain::stripped_dimensions) * SimulationConstants::scale;
 	                    renderer->DebugDrawArrow(interpolationPos,
@@ -511,15 +724,16 @@ void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, b
 	        }
 	    }
 	} else {
+        // TODO: skip halo cells
 	    for (const auto& domain : *domains_) {
 	        for (uint64_t x = cell_subdivision; x <= (SimulationDomain::dimensions.x - 1) * cell_subdivision; ++x) {
 	            for (uint64_t y = cell_subdivision; y <= (SimulationDomain::dimensions.y - 1) * cell_subdivision; ++y) {
 	                for (uint64_t z = cell_subdivision; z <= (SimulationDomain::dimensions.z - 1) * cell_subdivision; ++z) {
-	                    nPos = math::vec3<float>{
+                        math::vec3<float> nPos{
 	                        static_cast<float>(x) / static_cast<float>(cell_subdivision) + 1.0f / static_cast<float>(cell_subdivision + 1),
                             static_cast<float>(y) / static_cast<float>(cell_subdivision) + 1.0f / static_cast<float>(cell_subdivision + 1),
                             static_cast<float>(z) / static_cast<float>(cell_subdivision) + 1.0f / static_cast<float>(cell_subdivision + 1)};
-	                    interpolationPos = domain.DenormalizePosition(nPos);
+                        math::vec3<float> interpolationPos = domain.DenormalizePosition(nPos);
 	                    math::vec3<float> velocity = domain.SampleVelocity(nPos) / static_cast<float>(cell_subdivision);
 	                    interpolationPos +=  world_origin_offset_ +static_cast<math::vec3<float>>(domain.domain_index_ * SimulationDomain::stripped_dimensions) * SimulationConstants::scale;
 	                    renderer->DebugDrawArrow(interpolationPos,

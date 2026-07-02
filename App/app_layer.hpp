@@ -1,11 +1,12 @@
 #pragma once
+#include "euler_fluid_sim.hpp"
 
 #include <Core/Application/layer.hpp>
 #include <Core/Engine/Assets/AssetManager/asset_manager.hpp>
 #include <Core/Engine/Scene/scene.hpp>
 #include <Core/Engine/Components/Camera/camera.hpp>
 #include <Core/Renderer/renderer.hpp>
-#include "euler_fluid_sim.hpp"
+#include <Utils/thread_pool.hpp>
 
 
 class MainLayer : public Core::BaseLayer {
@@ -19,6 +20,7 @@ private:
     void HandleInputs();
     void HandleImGUI();
 
+    utils::DefaultThreadPool thread_pool_;
     Core::Engine::Assets::AssetManager asset_manager_;
     Core::Engine::Scene scene_;
     Core::RenderPipeline pipeline_;

@@ -1,4 +1,5 @@
 #include "renderer.hpp"
+#include "renderer.hpp"
 
 #include <cassert>
 
@@ -304,6 +305,22 @@ namespace Core {
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
 
+    void RenderPipeline::ReserveLineSpace(Engine::Assets::SColor color, size_t count, bool persistent) {
+        auto reserve_space = [](std::unordered_map<Engine::Assets::SColor, std::vector<DebugLine>>& storage, Engine::Assets::SColor color, size_t count) {
+            if (auto it = storage.find(color); it == storage.end()) {
+                storage.emplace(color, std::vector<DebugLine>{}).first->second.reserve(count);
+            } else {
+                it->second.reserve(count);
+            }
+        };
+
+        if (persistent) {
+            reserve_space(static_debug_draws_, color, count);
+        } else {
+            reserve_space(per_frame_debug_draws_, color, count);
+        }
+    }
+
     void RenderPipeline::DebugDrawAll() {
         using namespace Core::Engine::Assets;
         // Debug draw always uses default unlit variance
@@ -352,7 +369,8 @@ namespace Core {
                                       const math::vec3<float>& extent,
                                       Engine::Assets::SColor color,
                                       bool persistent) {
-        std::vector<DebugLine> lines(12, {center, center});
+        thread_local std::array<DebugLine, 12> lines;
+        lines.fill({center, center});
         // along X
         lines[0].start  += math::vec3<float>{ extent.x,  extent.y,  extent.z};
         lines[0].end  += math::vec3<float>{-extent.x,  extent.y,  extent.z};
@@ -381,17 +399,19 @@ namespace Core {
         lines[11].start += math::vec3<float>{-extent.x, -extent.y,  extent.z};
         lines[11].end   += math::vec3<float>{-extent.x, -extent.y, -extent.z};
 
-        DebugDrawPrimitive(std::move(lines), color, persistent);
+        DebugDrawPrimitive(lines, color, persistent);
     }
 
     void RenderPipeline::DebugDrawLine(const math::vec3<float>& start,
                                        const math::vec3<float>& end,
                                        Engine::Assets::SColor color,
                                        bool persistent) {
+        thread_local std::array<DebugLine, 1> line;
         if (start == end) {
             return;
         }
-        DebugDrawPrimitive({{start, end}}, color, persistent);
+        line[0] = {start, end};
+        DebugDrawPrimitive(line, color, persistent);
     }
 
     void RenderPipeline::DebugDrawArrow(const math::vec3<float>& start,
@@ -399,20 +419,22 @@ namespace Core {
                                         float head_size,
                                         Engine::Assets::SColor color,
                                         bool persistent) {
+        thread_local DebugLine lines[3];
+
         if (start == end) {
             return;
         }
         math::vec3<float> direction = end - start;
         direction.normalize();
+        // best_orthogonal causes flickering when plain is changing
+        // weighted average of 2 smallest axis will help but it does have edgecases where arrow is almost axis alligned
         auto orth = math::best_orthogonal(direction);
 
-        std::vector<DebugLine> lines;
-        lines.reserve(3);
-        lines.emplace_back(start, end);
-        lines.emplace_back(end, end + (direction * -head_size) + (orth * head_size));
-        lines.emplace_back(end, end + (direction * -head_size) + (orth * -head_size));
+        lines[0] = {start, end};
+        lines[1] = {end, end + (direction * -head_size) + (orth * head_size)};
+        lines[2] = {end, end + (direction * -head_size) + (orth * -head_size)};
 
-        DebugDrawPrimitive(std::move(lines), color, persistent);
+        DebugDrawPrimitive(lines, color, persistent);
     }
 
     void RenderPipeline::Reset() {
@@ -511,19 +533,19 @@ namespace Core {
         }
     }
 
-    void RenderPipeline::DebugDrawPrimitive(std::vector<DebugLine>&& lines, Engine::Assets::SColor color, bool persistent) {
-        auto insert_draw = [](std::unordered_map<Engine::Assets::SColor, std::vector<DebugLine>>& storage, std::vector<DebugLine>&& lines, Engine::Assets::SColor color) {
+    void RenderPipeline::DebugDrawPrimitive(std::span<DebugLine> lines, Engine::Assets::SColor color, bool persistent) {
+        auto insert_draw = [](std::unordered_map<Engine::Assets::SColor, std::vector<DebugLine>>& storage, std::span<DebugLine> lines, Engine::Assets::SColor color) {
             if (auto it = storage.find(color); it == storage.end()) {
-                storage.emplace(color, std::move(lines));
+                storage.emplace(color, std::vector<DebugLine>{lines.begin(), lines.end()});
             } else {
                 it->second.insert(it->second.end(), lines.begin(), lines.end());
             }
         };
 
         if (persistent) {
-            insert_draw(static_debug_draws_, std::move(lines), color);
+            insert_draw(static_debug_draws_, lines, color);
         } else {
-            insert_draw(per_frame_debug_draws_, std::move(lines), color);
+            insert_draw(per_frame_debug_draws_, lines, color);
         }
     }
 

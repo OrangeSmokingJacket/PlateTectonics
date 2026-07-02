@@ -7,6 +7,7 @@
 #include <Core/Engine/Assets/Mesh/mesh.hpp>
 #include <Core/Engine/Assets/Material/material.hpp>
 
+#include <span>
 #include <unordered_map>
 
 namespace Core {
@@ -36,6 +37,7 @@ namespace Core {
         void DrawSlice();
 
         // Debug pass
+        void ReserveLineSpace(Engine::Assets::SColor color, size_t count, bool persistent);
         void DebugDrawAll();
         void DebugDrawBox(const math::vec3<float>& center, const math::vec3<float>& extent, Engine::Assets::SColor color, bool persistent);
         void DebugDrawLine(const math::vec3<float>& start, const math::vec3<float>& end, Engine::Assets::SColor color, bool persistent);
@@ -50,7 +52,7 @@ namespace Core {
         static void SetBlendingMode(Engine::Assets::BlendMode mode);
         static void SetFaceCulling(Engine::Assets::FaceCulling mode);
 
-        void DebugDrawPrimitive(std::vector<DebugLine>&& lines, Engine::Assets::SColor color, bool persistent);
+        void DebugDrawPrimitive(std::span<DebugLine> lines, Engine::Assets::SColor color, bool persistent);
         // Debug draw data
         std::unordered_map<Engine::Assets::SColor, std::vector<DebugLine>> static_debug_draws_;
         std::unordered_map<Engine::Assets::SColor, std::vector<DebugLine>> per_frame_debug_draws_;

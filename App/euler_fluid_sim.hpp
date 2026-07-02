@@ -1,15 +1,15 @@
 #pragma once
 
-#include <cmath>
-#include <memory>
-
 #include "simulation_domain.hpp"
 
+#include <Core/Engine/Assets/AssetRef/asset_ref.hpp>
+#include <Core/Engine/Assets/Texture/colors.hpp>
+#include <Core/Engine/Assets/Texture/texture.hpp>
 #include <Math/math_def.hpp>
+#include <Utils/thread_pool.hpp>
 
-#include "Core/Engine/Assets/AssetRef/asset_ref.hpp"
-#include "Core/Engine/Assets/Texture/colors.hpp"
-#include "Core/Engine/Assets/Texture/texture.hpp"
+#include <cmath>
+#include <memory>
 
 namespace Core {
     class RenderPipeline;
@@ -34,7 +34,7 @@ public:
     static constexpr Dimensions full_dimensions = SimulationDomain::stripped_dimensions * domains + 2ull * SimulationDomain::halo_size;
 
     // Temp render ptr to draw grid
-	explicit EulerFluidSim(Core::RenderPipeline* renderer);
+	explicit EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThreadPool* thread_pool);
 	void Update(float delta_time);
     void RenderDebug(Core::RenderPipeline* renderer) const;
     void SetupRenderTexture();
@@ -85,7 +85,7 @@ public:
     bool draw_boundary_velocities = false;
     bool draw_interpolated_velocities = true;
     int cell_subdivision = 1;
-    int max_cell_subdivision = 5;
+    int max_cell_subdivision = 4;
     // Temperature
     Core::Engine::Assets::Color min_temperature_color = Core::Engine::Assets::FromSColor(Core::Engine::Assets::SColor{12, 22, 188, 255});
     Core::Engine::Assets::Color max_temperature_color = Core::Engine::Assets::FromSColor(Core::Engine::Assets::SColor{255, 186, 0, 255});
@@ -100,7 +100,7 @@ public:
     Core::Engine::Assets::Color max_divergence_color = Core::Engine::Assets::Colors::Cyan;
 
 private:
-
+    utils::DefaultThreadPool* thread_pool_;
 	// Calculation related data
 	// per cell values are allocated on the heap
     std::unique_ptr<std::array<SimulationDomain, Cardinality(domains)>> domains_;

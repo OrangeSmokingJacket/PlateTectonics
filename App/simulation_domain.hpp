@@ -52,12 +52,18 @@ constexpr size_t Cardinality(const Dimensions& dimensions) {
     return dimensions[0] * dimensions[1] * dimensions[2];
 }
 
+struct MinMax {
+    double min;
+    double max;
+};
+
 class EulerFluidSim;
 
+// TODO: unique_ptr dereference const is quite noticeable now
 struct SimulationDomain {
-    // TODO: 64 or higher
+    // TODO: dimensions up to 64 or higher to minimize halo cells memory usage
     // [] is used because of constexpr and that array is initialized by the constructor
-    static constexpr Dimensions dimensions{16, 8, 5};
+    static constexpr Dimensions dimensions{16, 8, 8};
     static constexpr Dimensions halo_size{1, 1, 1};
     static constexpr Dimensions stripped_dimensions{dimensions - 2ull * halo_size};
     static constexpr Dimensions velocitiesXDimensions{dimensions[0] + 1, dimensions[1], dimensions[2]};
@@ -81,7 +87,7 @@ struct SimulationDomain {
     void AdvectVelocities();
     void AdvectTemperature();
 
-    [[nodiscard]] std::pair<double, double> DivergenceMinMax() const;
+    [[nodiscard]] MinMax DivergenceMinMax() const;
     [[nodiscard]] math::vec3<float> SampleVelocity(const math::vec3<float>& nPos) const;
 
     double RealCellsDotProduct(std::unique_ptr<GridValues> SimulationDomain::* lhs, std::unique_ptr<GridValues> SimulationDomain::* rhs) const;

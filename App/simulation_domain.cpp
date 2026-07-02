@@ -156,12 +156,18 @@ void SimulationDomain::ApplyCoefficients() {
 }
 
 void SimulationDomain::ApplyPreconditioner() {
+    intermediate_->SetToZero();
+    auxiliary_->SetToZero();
+
     for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
             for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
+                // For now all cels are fluid
+                /*
                 if (EulerFluidSim::IsSolidCell(WorldIndex(domain_index_, Index3D{x, y, z}))) {
                     continue;
                 }
+                */
                 double ax = Aplusx(x - 1, y, z) * prec(x - 1, y, z) * intermediate(x - 1, y, z);
                 double ay = Aplusy(x, y - 1, z) * prec(x, y - 1, z) * intermediate(x, y - 1, z);
                 double az = Aplusz(x, y, z - 1) * prec(x, y, z - 1) * intermediate(x, y, z - 1);
@@ -170,12 +176,15 @@ void SimulationDomain::ApplyPreconditioner() {
             }
         }
     }
-    for (int64_t x = dimensions.x - halo_size.x - 1; x > halo_size.x - 1; x--) {
-        for (int64_t y = dimensions.y - halo_size.y - 1; y > halo_size.y - 1; y--) {
-            for (int64_t z = dimensions.z - halo_size.z - 1; z > halo_size.z - 1; z--) {
+    for (int64_t x = dimensions.x - halo_size.x - 1; x > static_cast<int64_t>(halo_size.x) - 1; x--) {
+        for (int64_t y = dimensions.y - halo_size.y - 1; y > static_cast<int64_t>(halo_size.y) - 1; y--) {
+            for (int64_t z = dimensions.z - halo_size.z - 1; z > static_cast<int64_t>(halo_size.z) - 1; z--) {
+                // For now all cels are fluid
+                /*
                 if (EulerFluidSim::IsSolidCell(WorldIndex(domain_index_, Index3D{x, y, z}))) {
                     continue;
                 }
+                */
                 double ax = Aplusx(x, y, z) * prec(x, y, z) * aux(x + 1, y, z);
                 double ay = Aplusy(x, y, z) * prec(x, y, z) * aux(x, y + 1, z);
                 double az = Aplusz(x, y, z) * prec(x, y, z) * aux(x, y, z + 1);
@@ -329,7 +338,7 @@ void SimulationDomain::AdvectTemperature() {
     std::swap(cell_temperature_, cell_temperature_temp_);
 }
 
-std::pair<double, double> SimulationDomain::DivergenceMinMax() const {
+MinMax SimulationDomain::DivergenceMinMax() const {
     double minDivergence = std::numeric_limits<double>::max();
     double maxDivergence = std::numeric_limits<double>::lowest();
     for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
@@ -364,8 +373,8 @@ double SimulationDomain::RealCellsDotProduct(std::unique_ptr<GridValues> Simulat
     double result = 0.0;
     // skip halo cells, because they are either border or belong to another domain
     for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
-        for (size_t y = halo_size.x; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = halo_size.x; z < dimensions.z - halo_size.z; ++z) {
+        for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
+            for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
                 result += (*(this->*lhs))[x][y][z] * (*(this->*rhs))[x][y][z];
             }
         }

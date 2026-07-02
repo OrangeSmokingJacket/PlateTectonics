@@ -1,14 +1,18 @@
 set(LIB_NAME utils)
 
 set(HEADERS
+    array_utils.hpp
 	buffer_utils.hpp
+    compiler_utils.hpp
 	enum_utils.hpp
+    thread_pool.hpp
 	hash.hpp
+    uuid.hpp
 )
 
 set(SOURCES
-    uuid.cpp
     hash.cpp
+    uuid.cpp
 )
 
 add_library(${LIB_NAME} ${HEADERS} ${SOURCES})
