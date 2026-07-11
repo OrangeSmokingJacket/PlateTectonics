@@ -42,9 +42,11 @@ struct CoefficientValues {
 };
 
 using Index3D = math::vec3<size_t>;
+using Index4D = math::vec4<size_t>;
 using Dimensions = Index3D;
 
-constexpr size_t Cardinality(const Dimensions& dimensions) { return dimensions[0] * dimensions[1] * dimensions[2]; }
+constexpr size_t Cardinality(const Index3D& index) { return index[0] * index[1] * index[2]; }
+constexpr size_t Cardinality(const Index4D& index) { return index[0] * index[1] * index[2] * index[3]; }
 
 struct MinMax {
     double min;
@@ -57,7 +59,7 @@ class EulerFluidSim;
 struct SimulationDomain {
     // TODO: dimensions up to 64 or higher to minimize halo cells memory usage
     // [] is used because of constexpr and that array is initialized by the constructor
-    static constexpr Dimensions dimensions{16, 8, 8};
+    static constexpr Dimensions dimensions{6, 6, 3};
     static constexpr Dimensions halo_size{1, 1, 1};
     static constexpr Dimensions stripped_dimensions{dimensions - 2ull * halo_size};
     static constexpr Dimensions velocitiesXDimensions{dimensions[0] + 1, dimensions[1], dimensions[2]};
@@ -70,7 +72,7 @@ struct SimulationDomain {
     using GridYValues = Array3D<double, velocitiesYDimensions[0], velocitiesYDimensions[1], velocitiesYDimensions[2]>;
     using GridZValues = Array3D<double, velocitiesZDimensions[0], velocitiesZDimensions[1], velocitiesZDimensions[2]>;
 
-    explicit SimulationDomain(Index3D domain_index);
+    explicit SimulationDomain(Index4D domain_index);
     void CalculateCoefficients();
     void CalculatePreconditioner();
     void CalculateDivergence();
@@ -84,8 +86,9 @@ struct SimulationDomain {
     [[nodiscard]] MinMax DivergenceMinMax() const;
     [[nodiscard]] math::vec3<float> SampleVelocity(const math::vec3<float>& nPos) const;
 
-    double RealCellsDotProduct(std::unique_ptr<GridValues> SimulationDomain::* lhs,
-                               std::unique_ptr<GridValues> SimulationDomain::* rhs) const;
+    [[nodiscard]] double RealCellsDotProduct(std::unique_ptr<GridValues> SimulationDomain::* lhs,
+                                             std::unique_ptr<GridValues> SimulationDomain::* rhs) const;
+    [[nodiscard]] double RealCellsLength(std::unique_ptr<GridValues> SimulationDomain::* input) const;
 
     [[nodiscard]] math::vec3<float> NormalizePosition(const math::vec3<float>& pos) const;    // TODO: make constexpr
     [[nodiscard]] math::vec3<float> DenormalizePosition(const math::vec3<float>& nPos) const; // TODO: make constexpr
@@ -104,7 +107,7 @@ struct SimulationDomain {
     std::unique_ptr<GridValues> search_;
 
     // TODO: make it vec4 for cube-sphere
-    Index3D domain_index_;
+    Index4D domain_index_;
 };
 
 static const math::vec3<float> ValueGridOffset{0.5, 0.5, 0.5};

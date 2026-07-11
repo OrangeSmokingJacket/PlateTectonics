@@ -8,50 +8,602 @@
 #include <future>
 #include <latch>
 
-template <Dimensions GridDimensions>
-constexpr Index3D ToIndex3D(size_t linear_index) {
-    return Index3D{linear_index / (GridDimensions.y * GridDimensions.z),
-                   (linear_index / GridDimensions.z) % GridDimensions.y,
-                   linear_index % GridDimensions.z};
+template <Index4D GridDimensions>
+constexpr size_t FromIndex4D(size_t x, size_t y, size_t z, size_t w) {
+    // [] used because of constexpr and that vec4 is initialized as array
+    return w * (GridDimensions[0] * GridDimensions[1] * GridDimensions[2]) +
+           x * (GridDimensions[1] * GridDimensions[2]) + y * GridDimensions[2] + z;
 }
 
-template <Dimensions GridDimensions>
-constexpr size_t FromIndex3D(Index3D index_3d) {
-    return index_3d.x * GridDimensions.y * GridDimensions.z + index_3d.y * GridDimensions.z + index_3d.z;
+template <Index4D GridDimensions>
+constexpr size_t FromIndex4D(const Index4D& index_4d) {
+    // [] used because of constexpr and that vec4 is initialized as array
+    return index_4d[3] * (GridDimensions[0] * GridDimensions[1] * GridDimensions[2]) +
+           index_4d[0] * (GridDimensions[1] * GridDimensions[2]) + index_4d[1] * GridDimensions[2] + index_4d[2];
 }
 
-template <Dimensions GridDimensions>
-constexpr size_t FromIndex3D(size_t x, size_t y, size_t z) {
-    return x * GridDimensions.y * GridDimensions.z + y * GridDimensions.z + z;
+template <Index4D GridDimensions>
+constexpr Index4D ToIndex4D(size_t index) {
+    // wxyz order
+    return Index4D{(index / (GridDimensions[1] * GridDimensions[2]) % GridDimensions[0]),
+                   (index / GridDimensions[2]) % GridDimensions[1],
+                   index % GridDimensions[2],
+                   index / (GridDimensions[0] * GridDimensions[1] * GridDimensions[2])};
 }
 
-// z is packed closest
+// wxyz; z is packed closest
 template <size_t... Indices>
 std::array<SimulationDomain, sizeof...(Indices)> InitializeDomainArray(std::index_sequence<Indices...>) {
-    return {SimulationDomain(ToIndex3D<EulerFluidSim::domains>(Indices))...};
+    return {SimulationDomain(ToIndex4D<EulerFluidSim::domains>(Indices))...};
+}
+
+struct CoordinateSystem {
+    size_t x;
+    size_t y;
+    size_t z;
+    bool inverse;
+};
+
+constexpr math::vec3<float> ConvertToFaceCS(const CoordinateSystem& cs, const math::vec3<float>& vec) {
+    // it is a reverse transformation
+    math::vec3<float> result{vec[2 - cs.z], vec[2 - cs.y], vec[2 - cs.x]};
+    return cs.inverse ? -result : result;
+}
+
+// Transforms coordinate system for each face
+//! Warning: 3-5 faces are in reverse handedness
+constexpr std::array<CoordinateSystem, 6> cube_face_cs{CoordinateSystem{.x = 0, .y = 1, .z = 2, .inverse = false},
+                                                       CoordinateSystem{.x = 1, .y = 2, .z = 0, .inverse = false},
+                                                       CoordinateSystem{.x = 2, .y = 0, .z = 1, .inverse = false},
+                                                       CoordinateSystem{.x = 0, .y = 1, .z = 2, .inverse = true},
+                                                       CoordinateSystem{.x = 1, .y = 2, .z = 0, .inverse = true},
+                                                       CoordinateSystem{.x = 2, .y = 0, .z = 1, .inverse = true}};
+
+// For W neighbours it is cheaper to look it up, than compute
+struct WNeighbour {
+    size_t x_plus;
+    size_t x_minus;
+    size_t y_plus;
+    size_t y_minus;
+};
+// Get neighbouring face in specific direction
+constexpr std::array<WNeighbour, 6> w_neighbours{WNeighbour{1, 4, 2, 5},
+                                                 WNeighbour{2, 5, 0, 3},
+                                                 WNeighbour{0, 3, 1, 4},
+                                                 WNeighbour{4, 1, 5, 2},
+                                                 WNeighbour{5, 2, 3, 0},
+                                                 WNeighbour{3, 0, 4, 1}};
+
+// TODO: separate array for orthogonal directions
+static constexpr std::array directions{
+    math::vec3<int>{-1, -1, -1},
+    math::vec3<int>{-1, -1, 0},
+    math::vec3<int>{-1, -1, 1},
+    math::vec3<int>{-1, 0, -1},
+    math::vec3<int>{-1, 0, 0},
+    math::vec3<int>{-1, 0, 1},
+    math::vec3<int>{-1, 1, -1},
+    math::vec3<int>{-1, 1, 0},
+    math::vec3<int>{-1, 1, 1},
+    math::vec3<int>{0, -1, -1},
+    math::vec3<int>{0, -1, 0},
+    math::vec3<int>{0, -1, 1},
+    math::vec3<int>{0, 0, -1},
+    //math::vec3<int>{0, 0, 0}, skip itself
+    math::vec3<int>{0, 0, 1},
+    math::vec3<int>{0, 1, -1},
+    math::vec3<int>{0, 1, 0},
+    math::vec3<int>{0, 1, 1},
+    math::vec3<int>{1, -1, -1},
+    math::vec3<int>{1, -1, 0},
+    math::vec3<int>{1, -1, 1},
+    math::vec3<int>{1, 0, -1},
+    math::vec3<int>{1, 0, 0},
+    math::vec3<int>{1, 0, 1},
+    math::vec3<int>{1, 1, -1},
+    math::vec3<int>{1, 1, 0},
+    math::vec3<int>{1, 1, 1},
+};
+
+// Is not influenced by .w
+template <math::vec3<int> Stagger>
+static constexpr std::pair<size_t, size_t> DestinationRange(int dir, size_t axis_index) {
+    // if stagger is negative, apply size increase in different direction
+    if (Stagger[axis_index] >= 0) {
+        switch (dir) {
+            case -1:
+                return {0, SimulationDomain::halo_size[axis_index]};
+            case 0:
+                return {SimulationDomain::halo_size[axis_index],
+                        SimulationDomain::stripped_dimensions[axis_index] + Stagger[axis_index]};
+            case 1:
+                return {SimulationDomain::dimensions[axis_index] - SimulationDomain::halo_size[axis_index],
+                        SimulationDomain::halo_size[axis_index] + Stagger[axis_index]};
+            default:
+                utils::unreachable();
+        }
+    } else {
+        switch (dir) {
+            case -1:
+                return {0, SimulationDomain::halo_size[axis_index] - Stagger[axis_index]};
+            case 0:
+                return {SimulationDomain::halo_size[axis_index],
+                        SimulationDomain::stripped_dimensions[axis_index] - Stagger[axis_index]};
+            case 1:
+                return {SimulationDomain::dimensions[axis_index], SimulationDomain::halo_size[axis_index]};
+            default:
+                utils::unreachable();
+        }
+    }
+}
+
+namespace SameW {
+
+    template <math::vec3<int> Stagger = math::vec3<int>{0, 0, 0}>
+    static constexpr size_t SourceAdjustment(int dir, size_t axis_index) {
+        switch (dir) {
+            case -1:
+                return SimulationDomain::stripped_dimensions[axis_index];
+            case 0:
+                return SimulationDomain::halo_size[axis_index];
+            case 1:
+                if constexpr (math::component_sum(Stagger) >= 0) {
+                    return SimulationDomain::halo_size[axis_index];
+                } else {
+                    return SimulationDomain::halo_size[axis_index] - Stagger[axis_index];
+                }
+            default:
+                utils::unreachable();
+        }
+    }
+} // namespace SameW
+
+namespace DifferentW {
+
+    enum class ScanDir { Forward, Backward };
+
+    struct SourceAdj {
+        size_t x_start;
+        size_t y_start;
+        ScanDir x_scan_dir;
+        ScanDir y_scan_dir;
+    };
+
+    static constexpr SourceAdj SourceAdjustmentX(int dir) {
+        if (dir == -1) {
+            return {.x_start = SimulationDomain::dimensions[0] - SimulationDomain::halo_size[0] - 1,
+                    .y_start = SimulationDomain::halo_size[1] * 2 - 1,
+                    .x_scan_dir = ScanDir::Backward,
+                    .y_scan_dir = ScanDir::Backward};
+        }
+        if (dir == 1) {
+            return {.x_start = SimulationDomain::halo_size[0],
+                    .y_start = SimulationDomain::dimensions[1] - SimulationDomain::halo_size[1] - 1,
+                    .x_scan_dir = ScanDir::Forward,
+                    .y_scan_dir = ScanDir::Backward};
+        }
+        utils::unreachable();
+    }
+    static constexpr SourceAdj SourceAdjustmentY(int dir) {
+        if (dir == -1) {
+            return {.x_start = SimulationDomain::halo_size[0] * 2 - 1,
+                    .y_start = SimulationDomain::dimensions[1] - SimulationDomain::halo_size[1] - 1,
+                    .x_scan_dir = ScanDir::Backward,
+                    .y_scan_dir = ScanDir::Backward};
+        }
+        if (dir == 1) {
+            return {.x_start = SimulationDomain::dimensions[0] - SimulationDomain::halo_size[0] - 1,
+                    .y_start = SimulationDomain::halo_size[1],
+                    .x_scan_dir = ScanDir::Backward,
+                    .y_scan_dir = ScanDir::Forward};
+        }
+        utils::unreachable();
+    }
+
+    // X or Y have to be outside domains bounds
+    template <Index4D GridDimensions>
+    constexpr size_t NeighbourDomainIndex(int64_t x, int64_t y, size_t z, size_t w) {
+        static_assert(GridDimensions[0] == GridDimensions[1]);
+
+        if (x < 0) {
+            return FromIndex4D<GridDimensions>(GridDimensions.x - y - 1, 0, z, w);
+        } else if (x == static_cast<int64_t>(GridDimensions.x)) {
+            return FromIndex4D<GridDimensions>(y, GridDimensions.y - 1, z, w);
+        } else if (y < 0) {
+            return FromIndex4D<GridDimensions>(0, GridDimensions.y - x - 1, z, w);
+        } else if (y == static_cast<int64_t>(GridDimensions.y)) {
+            return FromIndex4D<GridDimensions>(GridDimensions.x - 1, x, z, w);
+        }
+        utils::unreachable();
+    }
+
+} // namespace DifferentW
+
+// Cube-corner halo cells do not have corresponding real cells
+// They are filled with averages
+// It is not correct, but good enough for now
+template <typename Grid, math::vec3<int> Stagger = math::vec3<int>{0, 0, 0}>
+void FillCornerHalos(Grid& grid, const Index4D& domain_index) {
+    static constexpr std::array<std::pair<int, int>, 4> corner_dirs{{{-1, -1}, {-1, 1}, {1, -1}, {1, 1}}};
+    for (auto [dx, dy] : corner_dirs) {
+        // Averaging is applied only for cube face corners
+        bool in_x = static_cast<int>(domain_index.x) + dx >= 0 &&
+                    static_cast<int>(domain_index.x) + dx < static_cast<int>(EulerFluidSim::domains.x);
+        bool in_y = static_cast<int>(domain_index.y) + dy >= 0 &&
+                    static_cast<int>(domain_index.y) + dy < static_cast<int>(EulerFluidSim::domains.y);
+        if (in_x || in_y) {
+            continue;
+        }
+
+        auto [hx, cx] = DestinationRange<Stagger>(dx, 0);
+        auto [hy, cy] = DestinationRange<Stagger>(dy, 1);
+        auto [hx0, cx0] = DestinationRange<Stagger>(0, 0);
+        auto [hy0, cy0] = DestinationRange<Stagger>(0, 1);
+
+        for (size_t ii = 0; ii < cx; ++ii) {
+            size_t i = dx > 0 ? hx + ii : hx + cx - 1 - ii; // inward first
+            if (i >= hx0 && i < hx0 + cx0) {
+                continue;
+            }
+            for (size_t jj = 0; jj < cy; ++jj) {
+                size_t j = dy > 0 ? hy + jj : hy + cy - 1 - jj;
+                if (j >= hy0 && j < hy0 + cy0) {
+                    continue;
+                }
+                for (size_t k = 0; k < Grid::size_Z; ++k) {
+                    grid[i][j][k] = 0.5 * (grid[i - dx][j][k] + grid[i][j - dy][k]);
+                }
+            }
+        }
+    }
+}
+
+// Mixed corner: only one axis crosses the cube-face edge
+// and values have to be copied
+template <typename Grid, math::vec3<int> Stagger = math::vec3<int>{0, 0, 0}>
+void FillMixedCornerHalos(std::array<SimulationDomain, Cardinality(EulerFluidSim::domains)>& domains,
+                          std::unique_ptr<Grid> SimulationDomain::* grid,
+                          const Index4D& di) {
+    static constexpr std::array<std::pair<int, int>, 4> corner_dirs{{{-1, -1}, {-1, 1}, {1, -1}, {1, 1}}};
+    for (auto [dx, dy] : corner_dirs) {
+        const bool in_x = static_cast<int>(di.x) + dx >= 0 &&
+                          static_cast<int>(di.x) + dx < static_cast<int>(EulerFluidSim::domains.x);
+        const bool in_y = static_cast<int>(di.y) + dy >= 0 &&
+                          static_cast<int>(di.y) + dy < static_cast<int>(EulerFluidSim::domains.y);
+        if (in_x == in_y) {
+            continue;
+        }
+        auto& dst = *(domains[FromIndex4D<EulerFluidSim::domains>(di.x, di.y, di.z, di.w)].*grid);
+        auto& src =
+            *(domains[FromIndex4D<EulerFluidSim::domains>(di.x + (in_x ? dx : 0), di.y + (in_y ? dy : 0), di.z, di.w)].*
+              grid);
+        auto [hx, cx] = DestinationRange<Stagger>(dx, 0);
+        auto [hy, cy] = DestinationRange<Stagger>(dy, 1);
+        int64_t shift_x = in_x ? dx * static_cast<int64_t>(SimulationDomain::stripped_dimensions[0]) : 0;
+        int64_t shift_y = in_y ? dy * static_cast<int64_t>(SimulationDomain::stripped_dimensions[1]) : 0;
+        for (size_t i = 0; i < cx; ++i) {
+            for (size_t j = 0; j < cy; ++j) {
+                for (size_t k = 0; k < Grid::size_Z; ++k) {
+                    dst[hx + i][hy + j][k] = src[hx + i - shift_x][hy + j - shift_y][k];
+                }
+            }
+        }
+    }
+}
+
+// Works for regular grid and MAC grid over Z direction
+// TODO: select dir array based on sync scope
+template <typename Grid, math::vec3<int> Stagger = math::vec3<int>{0, 0, 0}>
+requires(Stagger[0] == 0 && Stagger[1] == 0)
+void SyncGridValues(std::array<SimulationDomain, Cardinality(EulerFluidSim::domains)>& domains,
+                    std::unique_ptr<Grid> SimulationDomain::* grid,
+                    SyncScope scope = SyncScope::Full) {
+    for (size_t dw = 0; dw < EulerFluidSim::domains.w; ++dw) {
+        for (size_t dx = 0; dx < EulerFluidSim::domains.x; ++dx) {
+            for (size_t dy = 0; dy < EulerFluidSim::domains.y; ++dy) {
+                for (size_t dz = 0; dz < EulerFluidSim::domains.z; ++dz) {
+                    for (const auto& dir : directions) {
+                        // Solver grids never read diagonal halos - skip all non-face work
+                        if (scope == SyncScope::Orthogonal && (dir.x != 0) + (dir.y != 0) + (dir.z != 0) != 1) {
+                            continue;
+                        }
+                        // Those are border domains, nothing to sync there
+                        if (static_cast<int>(dz) + dir.z < static_cast<int>(0) ||
+                            static_cast<int>(dz) + dir.z >= static_cast<int>(EulerFluidSim::domains.z)) {
+                            continue;
+                        }
+                        auto domain_index_to = FromIndex4D<EulerFluidSim::domains>(dx, dy, dz, dw);
+
+                        if (static_cast<int>(dx) + dir.x < static_cast<int>(0) ||
+                            static_cast<int>(dy) + dir.y < static_cast<int>(0) ||
+                            static_cast<int>(dx) + dir.x >= static_cast<int>(EulerFluidSim::domains.x) ||
+                            static_cast<int>(dy) + dir.y >= static_cast<int>(EulerFluidSim::domains.y)) {
+                            // x/y borders have to be synced with other faces
+                            // neighbour domain index will be different
+                            // cell's grids are also rotated differently
+                            // For velocities X and Y have to be swapped
+
+                            auto [hx, cx] = DestinationRange<Stagger>(dir.x, 0);
+                            auto [hy, cy] = DestinationRange<Stagger>(dir.y, 1);
+                            auto [hz, cz] = DestinationRange<Stagger>(dir.z, 2);
+
+                            if (dir.x * dir.y != 0) {
+                                auto sx = SameW::SourceAdjustment(-dir.x, 0);
+                                auto sy = SameW::SourceAdjustment(-dir.y, 1);
+                                auto sz = SameW::SourceAdjustment(-dir.z, 2);
+
+                                auto domain_index = FromIndex4D<EulerFluidSim::domains>(dx, dy, dz, dw);
+                                for (size_t i = 0; i < cx; ++i) {
+                                    for (size_t j = 0; j < cy; ++j) {
+                                        for (size_t k = 0; k < cz; ++k) {
+                                            (*(domains[domain_index].*grid))[hx + i][hy + j][hz + k] =
+                                                (*(domains[domain_index].*grid))[sx + i][sy + j][sz + k];
+                                        }
+                                    }
+                                }
+                            } else {
+                                auto sz = SameW::SourceAdjustment(dir.z, 2);
+
+                                auto adj = dir.x == 0 ? DifferentW::SourceAdjustmentY(dir.y)
+                                                      : DifferentW::SourceAdjustmentX(dir.x);
+                                size_t domain_index_from;
+                                if (dir.y == 0) {
+                                    if (dir.x > 0) {
+                                        domain_index_from = DifferentW::NeighbourDomainIndex<EulerFluidSim::domains>(
+                                            dx + dir.x,
+                                            dy,
+                                            dz + dir.z,
+                                            w_neighbours[dw].x_plus);
+                                    } else {
+                                        domain_index_from = DifferentW::NeighbourDomainIndex<EulerFluidSim::domains>(
+                                            dx + dir.x,
+                                            dy,
+                                            dz + dir.z,
+                                            w_neighbours[dw].x_minus);
+                                    }
+                                } else {
+                                    if (dir.y > 0) {
+                                        domain_index_from = DifferentW::NeighbourDomainIndex<EulerFluidSim::domains>(
+                                            dx,
+                                            dy + dir.y,
+                                            dz + dir.z,
+                                            w_neighbours[dw].y_plus);
+                                    } else {
+                                        domain_index_from = DifferentW::NeighbourDomainIndex<EulerFluidSim::domains>(
+                                            dx,
+                                            dy + dir.y,
+                                            dz + dir.z,
+                                            w_neighbours[dw].y_minus);
+                                    }
+                                }
+                                for (int64_t i = 0; i < cx; ++i) {
+                                    for (int64_t j = 0; j < cy; ++j) {
+                                        for (size_t k = 0; k < cz; ++k) {
+                                            int64_t from_i = adj.x_scan_dir == DifferentW::ScanDir::Forward ? j : -j;
+                                            int64_t from_j = adj.y_scan_dir == DifferentW::ScanDir::Forward ? i : -i;
+                                            (*(domains[domain_index_to].*grid))[hx + i][hy + j][hz + k] =
+                                                (*(domains[domain_index_from].*
+                                                   grid))[adj.x_start + from_i][adj.y_start + from_j][sz + k];
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Within same face logic is straight forward
+
+                            auto [hx, cx] = DestinationRange<Stagger>(dir.x, 0);
+                            auto [hy, cy] = DestinationRange<Stagger>(dir.y, 1);
+                            auto [hz, cz] = DestinationRange<Stagger>(dir.z, 2);
+
+                            auto sx = SameW::SourceAdjustment(dir.x, 0);
+                            auto sy = SameW::SourceAdjustment(dir.y, 1);
+                            auto sz = SameW::SourceAdjustment(dir.z, 2);
+
+                            auto domain_index_from =
+                                FromIndex4D<EulerFluidSim::domains>(dx + dir.x, dy + dir.y, dz + dir.z, dw);
+                            for (size_t i = 0; i < cx; ++i) {
+                                for (size_t j = 0; j < cy; ++j) {
+                                    for (size_t k = 0; k < cz; ++k) {
+                                        (*(domains[domain_index_to].*grid))[hx + i][hy + j][hz + k] =
+                                            (*(domains[domain_index_from].*grid))[sx + i][sy + j][sz + k];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Because of the Staggered grid, some values are lying on the split seem
+// That is solved by copying extra row of values
+// Always copying from the same direction won't work for current cube faces arrangement
+// X and Y have to be copied from opposing directions
+// Copy is done from X+ and Y- axes
+// velocity_z and StaggerZ could be done either way
+void SyncGridVelocitiesXY(std::array<SimulationDomain, Cardinality(EulerFluidSim::domains)>& domains) {
+    static constexpr math::vec3<int> StaggerX{1, 0, 0};
+    static constexpr math::vec3<int> StaggerY{0, -1, 0};
+
+    for (size_t dw = 0; dw < EulerFluidSim::domains.w; ++dw) {
+        for (size_t dx = 0; dx < EulerFluidSim::domains.x; ++dx) {
+            for (size_t dy = 0; dy < EulerFluidSim::domains.y; ++dy) {
+                for (size_t dz = 0; dz < EulerFluidSim::domains.z; ++dz) {
+                    for (const auto& dir : directions) {
+                        // Those are border domains, nothing to sync there
+                        if (static_cast<int>(dz) + dir.z < static_cast<int>(0) ||
+                            static_cast<int>(dz) + dir.z >= static_cast<int>(EulerFluidSim::domains.z)) {
+                            continue;
+                        }
+                        auto domain_index_to = FromIndex4D<EulerFluidSim::domains>(dx, dy, dz, dw);
+
+                        if (static_cast<int>(dx) + dir.x < static_cast<int>(0) ||
+                            static_cast<int>(dy) + dir.y < static_cast<int>(0) ||
+                            static_cast<int>(dx) + dir.x >= static_cast<int>(EulerFluidSim::domains.x) ||
+                            static_cast<int>(dy) + dir.y >= static_cast<int>(EulerFluidSim::domains.y)) {
+                            // x/y borders have to be synced with other faces
+                            // neighbour domain index will be different
+                            // cell's grids are also rotated differently
+                            // For velocities X and Y have to be swapped
+
+                            auto [x_hx, x_cx] = DestinationRange<StaggerX>(dir.x, 0);
+                            auto [x_hy, x_cy] = DestinationRange<StaggerX>(dir.y, 1);
+                            auto [x_hz, x_cz] = DestinationRange<StaggerX>(dir.z, 2);
+                            auto [y_hx, y_cx] = DestinationRange<StaggerY>(dir.x, 0);
+                            auto [y_hy, y_cy] = DestinationRange<StaggerY>(dir.y, 1);
+                            auto [y_hz, y_cz] = DestinationRange<StaggerY>(dir.z, 2);
+
+                            if (dir.x * dir.y != 0) {
+                                continue;
+                            } else {
+                                auto sz = SameW::SourceAdjustment(dir.z, 2);
+
+                                auto adj = dir.x == 0 ? DifferentW::SourceAdjustmentY(dir.y)
+                                                      : DifferentW::SourceAdjustmentX(dir.x);
+                                size_t domain_index_from;
+                                if (dir.y == 0) {
+                                    if (dir.x > 0) {
+                                        domain_index_from = DifferentW::NeighbourDomainIndex<EulerFluidSim::domains>(
+                                            dx + dir.x,
+                                            dy,
+                                            dz + dir.z,
+                                            w_neighbours[dw].x_plus);
+                                    } else {
+                                        domain_index_from = DifferentW::NeighbourDomainIndex<EulerFluidSim::domains>(
+                                            dx + dir.x,
+                                            dy,
+                                            dz + dir.z,
+                                            w_neighbours[dw].x_minus);
+                                    }
+                                } else {
+                                    if (dir.y > 0) {
+                                        domain_index_from = DifferentW::NeighbourDomainIndex<EulerFluidSim::domains>(
+                                            dx,
+                                            dy + dir.y,
+                                            dz + dir.z,
+                                            w_neighbours[dw].y_plus);
+                                    } else {
+                                        domain_index_from = DifferentW::NeighbourDomainIndex<EulerFluidSim::domains>(
+                                            dx,
+                                            dy + dir.y,
+                                            dz + dir.z,
+                                            w_neighbours[dw].y_minus);
+                                    }
+                                }
+                                for (int64_t i = 0; i < x_cx; ++i) {
+                                    for (int64_t j = 0; j < x_cy; ++j) {
+                                        for (size_t k = 0; k < x_cz; ++k) {
+                                            auto mult = adj.y_scan_dir == DifferentW::ScanDir::Forward ? 1 : -1;
+                                            int64_t from_i = adj.x_scan_dir == DifferentW::ScanDir::Forward ? j : -j;
+                                            int64_t from_j = adj.y_scan_dir == DifferentW::ScanDir::Forward
+                                                                 ? i
+                                                                 : (-i - dir.y + (dir.x != 0));
+                                            (*domains[domain_index_to].velocities_x_)[x_hx + i][x_hy + j][x_hz + k] =
+                                                mult * (*domains[domain_index_from]
+                                                             .velocities_y_)[adj.x_start + from_i][adj.y_start + from_j]
+                                                                            [sz + k];
+                                        }
+                                    }
+                                }
+                                for (int64_t i = 0; i < y_cx; ++i) {
+                                    for (int64_t j = 0; j < y_cy; ++j) {
+                                        for (size_t k = 0; k < y_cz; ++k) {
+                                            auto mult = adj.x_scan_dir == DifferentW::ScanDir::Forward ? 1 : -1;
+                                            int64_t from_i = adj.x_scan_dir == DifferentW::ScanDir::Forward
+                                                                 ? j
+                                                                 : (-j - dir.x + (dir.y < 0));
+                                            int64_t from_j = adj.y_scan_dir == DifferentW::ScanDir::Forward ? i : -i;
+                                            (*domains[domain_index_to].velocities_y_)[y_hx + i][y_hy + j][y_hz + k] =
+                                                mult * (*domains[domain_index_from]
+                                                             .velocities_x_)[adj.x_start + from_i][adj.y_start + from_j]
+                                                                            [sz + k];
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            {
+                                auto sx = SameW::SourceAdjustment<StaggerX>(dir.x, 0);
+                                auto sy = SameW::SourceAdjustment<StaggerX>(dir.y, 1);
+                                auto sz = SameW::SourceAdjustment<StaggerX>(dir.z, 2);
+                                auto [hx, cx] = DestinationRange<StaggerX>(dir.x, 0);
+                                auto [hy, cy] = DestinationRange<StaggerX>(dir.y, 1);
+                                auto [hz, cz] = DestinationRange<StaggerX>(dir.z, 2);
+
+                                auto domain_index_from =
+                                    FromIndex4D<EulerFluidSim::domains>(dx + dir.x, dy + dir.y, dz + dir.z, dw);
+                                for (size_t i = 0; i < cx; ++i) {
+                                    for (size_t j = 0; j < cy; ++j) {
+                                        for (size_t k = 0; k < cz; ++k) {
+                                            (*domains[domain_index_to].velocities_x_)[hx + i][hy + j][hz + k] =
+                                                (*domains[domain_index_from].velocities_x_)[sx + i][sy + j][sz + k];
+                                        }
+                                    }
+                                }
+                            }
+                            {
+                                auto sx = SameW::SourceAdjustment<StaggerY>(dir.x, 0);
+                                auto sy = SameW::SourceAdjustment<StaggerY>(dir.y, 1);
+                                auto sz = SameW::SourceAdjustment<StaggerY>(dir.z, 2);
+                                auto [hx, cx] = DestinationRange<StaggerY>(dir.x, 0);
+                                auto [hy, cy] = DestinationRange<StaggerY>(dir.y, 1);
+                                auto [hz, cz] = DestinationRange<StaggerY>(dir.z, 2);
+
+                                auto domain_index_from =
+                                    FromIndex4D<EulerFluidSim::domains>(dx + dir.x, dy + dir.y, dz + dir.z, dw);
+                                for (size_t i = 0; i < cx; ++i) {
+                                    for (size_t j = 0; j < cy; ++j) {
+                                        for (size_t k = 0; k < cz; ++k) {
+                                            (*domains[domain_index_to].velocities_y_)[hx + i][hy + j][hz + k] =
+                                                (*domains[domain_index_from].velocities_y_)[sx + i][sy + j][sz + k];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (auto& domain : domains) {
+        FillMixedCornerHalos<SimulationDomain::GridXValues, StaggerX>(domains,
+                                                                      &SimulationDomain::velocities_x_,
+                                                                      domain.domain_index_);
+        FillMixedCornerHalos<SimulationDomain::GridYValues, StaggerY>(domains,
+                                                                      &SimulationDomain::velocities_y_,
+                                                                      domain.domain_index_);
+        FillCornerHalos<SimulationDomain::GridXValues, StaggerX>(*domain.velocities_x_, domain.domain_index_);
+        FillCornerHalos<SimulationDomain::GridYValues, StaggerY>(*domain.velocities_y_, domain.domain_index_);
+    }
 }
 
 // TODO: main thread is idle, while worker threads crunch through domains.
 // Coroutines could help with than
 // Ideally main thread should also participate in computations
 // for 8 worker thread utilization is 8/9 or ~88.8%, which is acceptable for now
-
 EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThreadPool* thread_pool)
     : thread_pool_(thread_pool)
     , domains_(std::make_unique<std::array<SimulationDomain, Cardinality(domains)>>(
-          InitializeDomainArray(std::make_index_sequence<Cardinality(domains)>())))
-    , render_texture_(Core::Engine::Assets::AssetManager::Get()->RegisterAsset(
-          std::make_unique<Core::Engine::Assets::Texture3Df>(full_dimensions.x,
-                                                             full_dimensions.y,
-                                                             full_dimensions.z))) {
+          InitializeDomainArray(std::make_index_sequence<Cardinality(domains)>()))) {
+    for (auto& texture : render_textures_) {
+        texture = Core::Engine::Assets::AssetManager::Get()->RegisterAsset(
+            std::make_unique<Core::Engine::Assets::Texture3Df>(full_dimensions.x,
+                                                               full_dimensions.y,
+                                                               full_dimensions.z));
+    }
     world_origin_offset_.x = -(full_dimensions.x * SimulationConstants::scale * 0.5);
     world_origin_offset_.y = -(full_dimensions.y * SimulationConstants::scale * 0.5);
-    world_origin_offset_.z = -(full_dimensions.z * SimulationConstants::scale * 0.5);
+    // x and y are equal, but we have to pick one
+    world_origin_offset_.z = -world_origin_offset_.x;
 
     DebugRandomizeBorderVelocities();
     SetInitialTemperature();
 
-    SyncCoefficients();
+    // TODO: look into coefficients and preconditioner sync
     SyncGridValues(&SimulationDomain::preconditioner_);
 
     if (drawGrid) {
@@ -166,13 +718,14 @@ void EulerFluidSim::SetupRenderTexture() {
     }
 
     for (const auto& domain : *domains_) {
+        auto face_index = domain.domain_index_.w;
         for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
             for (size_t y = 0; y < SimulationDomain::dimensions.y; ++y) {
                 for (size_t z = 0; z < SimulationDomain::dimensions.z; ++z) {
+                    auto world_index = WorldIndex(static_cast<Index3D>(domain.domain_index_), Index3D{x, y, z});
                     float t = ((*(domain.*grid))[x][y][z] - min) / (max - min);
-                    auto world_index = WorldIndex(domain.domain_index_, Index3D{x, y, z});
                     // TODO: remove const cast when mutable assets will be implemented
-                    const_cast<Core::Engine::Assets::Texture3Df*>(render_texture_.GetAsset())
+                    const_cast<Core::Engine::Assets::Texture3Df*>(render_textures_[face_index].GetAsset())
                         ->At(world_index.x, world_index.y, world_index.z) = math::lerp(*min_color, *max_color, t);
                 }
             }
@@ -180,8 +733,9 @@ void EulerFluidSim::SetupRenderTexture() {
     }
 }
 
-const Core::Engine::Assets::AssetRef<Core::Engine::Assets::Texture3Df>& EulerFluidSim::RenderTexture() const {
-    return render_texture_;
+const std::array<Core::Engine::Assets::AssetRef<Core::Engine::Assets::Texture3Df>, 6>&
+EulerFluidSim::RenderTextures() const {
+    return render_textures_;
 }
 
 void EulerFluidSim::DebugRandomizeBorderVelocities() {
@@ -208,7 +762,7 @@ void EulerFluidSim::DebugRandomizeBorderVelocities() {
             for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
                 for (size_t y = 0; y < SimulationDomain::dimensions.y; ++y) {
                     for (size_t z = 0; z < SimulationDomain::dimensions.z; ++z) {
-                        if (IsSolidCell(WorldIndex(domain.domain_index_, Index3D{x, y, z}))) {
+                        if (IsSolidCell(WorldIndex<2>(domain.domain_index_.z, z))) {
                             (*domain.velocities_x_)[x][y][z] = 0.0;
                             (*domain.velocities_x_)[x + 1][y][z] = 0.0;
                             (*domain.velocities_y_)[x][y][z] = 0.0;
@@ -234,134 +788,33 @@ void EulerFluidSim::DebugRandomizeBorderVelocities() {
     }
 }
 
-static constexpr std::array directions{
-    math::vec3<int>{-1, -1, -1},
-    math::vec3<int>{-1, -1, 0},
-    math::vec3<int>{-1, -1, 1},
-    math::vec3<int>{-1, 0, -1},
-    math::vec3<int>{-1, 0, 0},
-    math::vec3<int>{-1, 0, 1},
-    math::vec3<int>{-1, 1, -1},
-    math::vec3<int>{-1, 1, 0},
-    math::vec3<int>{-1, 1, 1},
-    math::vec3<int>{0, -1, -1},
-    math::vec3<int>{0, -1, 0},
-    math::vec3<int>{0, -1, 1},
-    math::vec3<int>{0, 0, -1},
-    //math::vec3<int>{0, 0, 0}, skip itself
-    math::vec3<int>{0, 0, 1},
-    math::vec3<int>{0, 1, -1},
-    math::vec3<int>{0, 1, 0},
-    math::vec3<int>{0, 1, 1},
-    math::vec3<int>{1, -1, -1},
-    math::vec3<int>{1, -1, 0},
-    math::vec3<int>{1, -1, 1},
-    math::vec3<int>{1, 0, -1},
-    math::vec3<int>{1, 0, 0},
-    math::vec3<int>{1, 0, 1},
-    math::vec3<int>{1, 1, -1},
-    math::vec3<int>{1, 1, 0},
-    math::vec3<int>{1, 1, 1},
-};
-
-template <math::vec3<size_t> Stagger>
-static constexpr std::pair<size_t, size_t> DestinationRange(int dir, size_t axis_index) {
-    switch (dir) {
-        case -1:
-            return {0, SimulationDomain::halo_size[axis_index]};
-        case 1:
-            return {SimulationDomain::dimensions[axis_index] - SimulationDomain::halo_size[axis_index],
-                    SimulationDomain::halo_size[axis_index] + Stagger[axis_index]};
-        case 0:
-            return {SimulationDomain::halo_size[axis_index],
-                    SimulationDomain::stripped_dimensions[axis_index] + Stagger[axis_index]};
-    }
-    utils::unreachable();
-}
-
-template <math::vec3<size_t> Stagger>
-static constexpr size_t SourceAdjustment(int dir, size_t axis_index) {
-    switch (dir) {
-        case -1:
-            return SimulationDomain::stripped_dimensions[axis_index];
-        case 1:
-            return SimulationDomain::halo_size[axis_index];
-        case 0:
-            return SimulationDomain::halo_size[axis_index];
-    }
-    utils::unreachable();
-}
-
-// for MAC grids correct Stagger has to be passed
-// Could be parallelized, since writes are done only to a local halos
-template <typename Grid, math::vec3<size_t> Stagger = math::vec3<size_t>{0, 0, 0}>
-void SyncGridValues(std::array<SimulationDomain, Cardinality(EulerFluidSim::domains)>& domains,
-                    std::unique_ptr<Grid> SimulationDomain::* grid) {
-    for (size_t dx = 0; dx < EulerFluidSim::domains.x; ++dx) {
-        for (size_t dy = 0; dy < EulerFluidSim::domains.y; ++dy) {
-            for (size_t dz = 0; dz < EulerFluidSim::domains.z; ++dz) {
-                for (const auto& dir : directions) {
-                    if (static_cast<int>(dx) + dir.x < static_cast<int>(0) ||
-                        static_cast<int>(dy) + dir.y < static_cast<int>(0) ||
-                        static_cast<int>(dz) + dir.z < static_cast<int>(0) ||
-                        static_cast<int>(dx) + dir.x >= static_cast<int>(EulerFluidSim::domains.x) ||
-                        static_cast<int>(dy) + dir.y >= static_cast<int>(EulerFluidSim::domains.y) ||
-                        static_cast<int>(dz) + dir.z >= static_cast<int>(EulerFluidSim::domains.z)) {
-                        continue;
-                    }
-
-                    auto [hx, cx] = DestinationRange<Stagger>(dir.x, 0);
-                    auto [hy, cy] = DestinationRange<Stagger>(dir.y, 1);
-                    auto [hz, cz] = DestinationRange<Stagger>(dir.z, 2);
-
-                    auto sx = SourceAdjustment<Stagger>(dir.x, 0);
-                    auto sy = SourceAdjustment<Stagger>(dir.y, 1);
-                    auto sz = SourceAdjustment<Stagger>(dir.z, 2);
-
-                    for (size_t i = 0; i < cx; ++i) {
-                        for (size_t j = 0; j < cy; ++j) {
-                            for (size_t k = 0; k < cz; ++k) {
-                                (*(domains[FromIndex3D<EulerFluidSim::domains>(dx, dy, dz)].*
-                                   grid))[hx + i][hy + j][hz + k] =
-                                    (*(domains
-                                           [FromIndex3D<EulerFluidSim::domains>(dx + dir.x, dy + dir.y, dz + dir.z)].*
-                                       grid))[sx + i][sy + j][sz + k];
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-void EulerFluidSim::SyncVelocitiesX() {
-    ::SyncGridValues<SimulationDomain::GridXValues, math::vec3<size_t>{1, 0, 0}>(*domains_,
-                                                                                 &SimulationDomain::velocities_x_);
-}
-
-void EulerFluidSim::SyncVelocitiesY() {
-    ::SyncGridValues<SimulationDomain::GridYValues, math::vec3<size_t>{0, 1, 0}>(*domains_,
-                                                                                 &SimulationDomain::velocities_y_);
-}
-
 void EulerFluidSim::SyncVelocitiesZ() {
-    ::SyncGridValues<SimulationDomain::GridZValues, math::vec3<size_t>{0, 0, 1}>(*domains_,
-                                                                                 &SimulationDomain::velocities_z_);
+    ::SyncGridValues<SimulationDomain::GridZValues, math::vec3<int>{0, 0, 1}>(*domains_,
+                                                                              &SimulationDomain::velocities_z_);
+    for (auto& domain : *domains_) {
+        FillMixedCornerHalos<SimulationDomain::GridZValues, math::vec3<int>{0, 0, 1}>(*domains_,
+                                                                                      &SimulationDomain::velocities_z_,
+                                                                                      domain.domain_index_);
+        FillCornerHalos<SimulationDomain::GridZValues, math::vec3<int>{0, 0, 1}>(*domain.velocities_z_,
+                                                                                 domain.domain_index_);
+    }
 }
 
 void EulerFluidSim::SyncVelocities() {
-    SyncVelocitiesX();
-    SyncVelocitiesY();
+    SyncGridVelocitiesXY(*domains_);
     SyncVelocitiesZ();
 }
 
-void EulerFluidSim::SyncGridValues(std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* grid) {
-    ::SyncGridValues<SimulationDomain::GridValues>(*domains_, grid);
-}
-
-void EulerFluidSim::SyncCoefficients() {
-    ::SyncGridValues<SimulationDomain::GridCoefficientValues>(*domains_, &SimulationDomain::coefficient_);
+void EulerFluidSim::SyncGridValues(std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* grid,
+                                   SyncScope scope) {
+    ::SyncGridValues<SimulationDomain::GridValues>(*domains_, grid, scope);
+    if (scope == SyncScope::Orthogonal) {
+        return;
+    }
+    for (auto& domain : *domains_) {
+        FillMixedCornerHalos<SimulationDomain::GridValues>(*domains_, grid, domain.domain_index_);
+        FillCornerHalos<SimulationDomain::GridValues>(*(domain.*grid), domain.domain_index_);
+    }
 }
 
 void EulerFluidSim::SetInitialTemperature() {
@@ -378,17 +831,17 @@ void EulerFluidSim::SetInitialTemperature() {
             // set all to ambient, except lower boundary
             domain.cell_temperature_->SetTo(ambient_temp);
 
-            if (domain.domain_index_.y == 0) {
+            if (domain.domain_index_.z == 0) {
                 for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
-                    for (size_t z = 0; z < SimulationDomain::dimensions.z; ++z) {
-                        (*domain.cell_temperature_)[x][0][z] = core_temp;
+                    for (size_t y = 0; y < SimulationDomain::dimensions.y; ++y) {
+                        (*domain.cell_temperature_)[x][y][0] = core_temp;
                     }
                 }
             }
-            if (domain.domain_index_.y == domains.y - 1) {
+            if (domain.domain_index_.z == domains.z - 1) {
                 for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
-                    for (size_t z = 0; z < SimulationDomain::dimensions.z; ++z) {
-                        (*domain.cell_temperature_)[x][SimulationDomain::dimensions.y - 1][z] = crust_temp;
+                    for (size_t y = 0; y < SimulationDomain::dimensions.y; ++y) {
+                        (*domain.cell_temperature_)[x][y][SimulationDomain::dimensions.z - 1] = crust_temp;
                     }
                 }
             }
@@ -403,6 +856,8 @@ void EulerFluidSim::SetInitialTemperature() {
 }
 
 void EulerFluidSim::PCG() {
+    // TODO: there is pressure divergence accumulation on domain borders, that has to be resolved
+    // Having precondition and coefficients local to domain increases iterations by a factor of 2
     // If divergence is low enough zero pressure will be close enough
     // It might be faster in some cases to skip this check
     double maxDivergence = std::numeric_limits<double>::lowest();
@@ -451,7 +906,7 @@ void EulerFluidSim::PCG() {
         sync_latch.wait();
     }
 
-    SyncGridValues(&SimulationDomain::auxiliary_);
+    SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
     double sigma = 0;
     {
         std::vector<std::future<double>> partial_dot_products;
@@ -493,7 +948,7 @@ void EulerFluidSim::PCG() {
             sync_latch.wait();
         }
 
-        SyncGridValues(&SimulationDomain::auxiliary_);
+        SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
         double dot_product = 0;
         {
             std::vector<std::future<double>> partial_dot_products;
@@ -531,7 +986,7 @@ void EulerFluidSim::PCG() {
                         *(domain.cell_pressure_->flat_data() + j) += *(domain.search_->flat_data() + j) * alpha;
                         *(domain.residual_->flat_data() + j) -= *(domain.auxiliary_->flat_data() + j) * alpha;
                     }
-                    promise->set_value(domain.residual_->Length());
+                    promise->set_value(domain.RealCellsLength(&SimulationDomain::residual_));
                 });
             }
 
@@ -558,7 +1013,7 @@ void EulerFluidSim::PCG() {
 
             sync_latch.wait();
         }
-        SyncGridValues(&SimulationDomain::auxiliary_);
+        SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
 
         double sigma_new = 0;
         {
@@ -640,45 +1095,111 @@ void EulerFluidSim::ProjectVelocities() {
 
 // Debug draw methods
 void EulerFluidSim::DrawGrid(Core::RenderPipeline* renderer, bool persistent) const {
-    if (boundaryOnly) {
-        auto box = math::vec3<float>{full_dimensions.x - 2, full_dimensions.y - 2, full_dimensions.z - 2} *
-                   SimulationConstants::scale * 0.5f;
-        renderer->DebugDrawBox(math::vec3<float>{}, box, grid_color_, persistent);
-    } else {
-        math::vec3<float> lineStart = world_origin_offset_;
-        math::vec3<float> lineEnd{world_origin_offset_.x,
-                                  world_origin_offset_.y,
-                                  world_origin_offset_.z + full_dimensions.z * SimulationConstants::scale};
-        for (uint64_t x = 0; x <= full_dimensions.x; ++x) {
-            lineStart.x = world_origin_offset_.x + x * SimulationConstants::scale;
-            lineEnd.x = world_origin_offset_.x + x * SimulationConstants::scale;
+    for (size_t i = 0; i < domains.w; ++i) {
+        if (boundaryOnly) {
+            // TODO: fix box drawing
+            auto box = math::vec3<float>{full_dimensions.x - SimulationDomain::halo_size.x,
+                                         full_dimensions.y - SimulationDomain::halo_size.y,
+                                         full_dimensions.z - SimulationDomain::halo_size.z} *
+                       SimulationConstants::scale * 0.5f;
+            box = ConvertToFaceCS(cube_face_cs[i], box);
+            auto center = ConvertToFaceCS(cube_face_cs[i], math::vec3<float>{0.0f, 0.0f, world_origin_offset_.z});
+            renderer->DebugDrawBox(center, box, grid_color_, persistent);
+        } else if (drawCubeSphereCoordinates) {
+            // Draw sphere cube
+            // There is some overdraw on cube sphere faces, but it is negligible
+            // And it is a debug drawing method anyway
+            // TODO: xy normalization to maintain relative cell size across faces
+            static constexpr Core::Engine::Assets::SColor new_grid_color{255, 255, 0, 255};
+            auto r = world_origin_offset_.z;
+            // Z aligned lines are batched into a single line
+            for (size_t x = 0; x <= full_dimensions.x; ++x) {
+                for (size_t y = 0; y <= full_dimensions.y; ++y) {
+                    math::vec3<float> grid_point = world_origin_offset_;
+                    grid_point.x += static_cast<float>(x) * SimulationConstants::scale;
+                    grid_point.y += static_cast<float>(y) * SimulationConstants::scale;
+
+                    auto normalized = math::normalize(ConvertToFaceCS(cube_face_cs[i], grid_point));
+                    auto line_start = normalized * r;
+                    auto line_end =
+                        normalized * (r + static_cast<float>(full_dimensions.z)) * SimulationConstants::scale;
+                    renderer->DebugDrawLine(line_start, line_end, grid_color_, persistent);
+                }
+            }
+            // XY lines do not have that luxury
+            // To avoid overdraw, only X+ and Y+ are drawn
+            for (size_t z = 0; z <= full_dimensions.z; ++z) {
+                for (size_t y = 0; y <= full_dimensions.y; ++y) {
+                    for (size_t x = 0; x <= full_dimensions.x; ++x) {
+                        math::vec3<float> grid_point = world_origin_offset_;
+                        grid_point.x += static_cast<float>(x) * SimulationConstants::scale;
+                        grid_point.y += static_cast<float>(y) * SimulationConstants::scale;
+
+                        auto point_scale = (r + static_cast<float>(z)) * SimulationConstants::scale;
+                        auto line_start = math::normalize(ConvertToFaceCS(cube_face_cs[i], grid_point)) * point_scale;
+
+                        if (x != full_dimensions.x) {
+                            auto grid_x_point = grid_point;
+                            grid_x_point.x += SimulationConstants::scale;
+                            auto line_end_x =
+                                math::normalize(ConvertToFaceCS(cube_face_cs[i], grid_x_point)) * point_scale;
+                            renderer->DebugDrawLine(line_start, line_end_x, grid_color_, persistent);
+                        }
+                        if (y != full_dimensions.y) {
+                            auto grid_y_point = grid_point;
+                            grid_y_point.y += SimulationConstants::scale;
+                            auto line_end_y =
+                                math::normalize(ConvertToFaceCS(cube_face_cs[i], grid_y_point)) * point_scale;
+                            renderer->DebugDrawLine(line_start, line_end_y, grid_color_, persistent);
+                        }
+                    }
+                }
+            }
+        } else {
+            math::vec3<float> lineStart = world_origin_offset_;
+            math::vec3<float> lineEnd{world_origin_offset_.x,
+                                      world_origin_offset_.y,
+                                      world_origin_offset_.z + full_dimensions.z * SimulationConstants::scale};
+            for (uint64_t x = 0; x <= full_dimensions.x; ++x) {
+                lineStart.x = world_origin_offset_.x + x * SimulationConstants::scale;
+                lineEnd.x = world_origin_offset_.x + x * SimulationConstants::scale;
+                for (uint64_t y = 0; y <= full_dimensions.y; ++y) {
+                    lineStart.y = world_origin_offset_.y + y * SimulationConstants::scale;
+                    lineEnd.y = world_origin_offset_.y + y * SimulationConstants::scale;
+                    renderer->DebugDrawLine(ConvertToFaceCS(cube_face_cs[i], lineStart),
+                                            ConvertToFaceCS(cube_face_cs[i], lineEnd),
+                                            grid_color_,
+                                            persistent);
+                }
+                lineStart.y = world_origin_offset_.y;
+                // lineEnd is already set
+                // lineEnd.y = world_origin_offset_.y + dimensions.y * SimulationConstants::scale;
+                for (uint64_t z = 0; z <= full_dimensions.z; ++z) {
+                    lineStart.z = world_origin_offset_.z + z * SimulationConstants::scale;
+                    lineEnd.z = world_origin_offset_.z + z * SimulationConstants::scale;
+                    renderer->DebugDrawLine(ConvertToFaceCS(cube_face_cs[i], lineStart),
+                                            ConvertToFaceCS(cube_face_cs[i], lineEnd),
+                                            grid_color_,
+                                            persistent);
+                }
+                lineStart.z = world_origin_offset_.z;
+                // lineEnd is already set
+                // lineEnd.z = world_origin_offset_.z + dimensions.z * SimulationConstants::scale;
+            }
+            lineStart.x = world_origin_offset_.x;
+            // lineEnd is already set
+            // lineEnd.x = world_origin_offset_.x + dimensions.x * SimulationConstants::scale;
             for (uint64_t y = 0; y <= full_dimensions.y; ++y) {
                 lineStart.y = world_origin_offset_.y + y * SimulationConstants::scale;
                 lineEnd.y = world_origin_offset_.y + y * SimulationConstants::scale;
-                renderer->DebugDrawLine(lineStart, lineEnd, grid_color_, persistent);
-            }
-            lineStart.y = world_origin_offset_.y;
-            // lineEnd is already set
-            // lineEnd.y = world_origin_offset_.y + dimensions.y * SimulationConstants::scale;
-            for (uint64_t z = 0; z <= full_dimensions.z; ++z) {
-                lineStart.z = world_origin_offset_.z + z * SimulationConstants::scale;
-                lineEnd.z = world_origin_offset_.z + z * SimulationConstants::scale;
-                renderer->DebugDrawLine(lineStart, lineEnd, grid_color_, persistent);
-            }
-            lineStart.z = world_origin_offset_.z;
-            // lineEnd is already set
-            // lineEnd.z = world_origin_offset_.z + dimensions.z * SimulationConstants::scale;
-        }
-        lineStart.x = world_origin_offset_.x;
-        // lineEnd is already set
-        // lineEnd.x = world_origin_offset_.x + dimensions.x * SimulationConstants::scale;
-        for (uint64_t y = 0; y <= full_dimensions.y; ++y) {
-            lineStart.y = world_origin_offset_.y + y * SimulationConstants::scale;
-            lineEnd.y = world_origin_offset_.y + y * SimulationConstants::scale;
-            for (uint64_t z = 0; z <= full_dimensions.z; ++z) {
-                lineStart.z = world_origin_offset_.z + z * SimulationConstants::scale;
-                lineEnd.z = world_origin_offset_.z + z * SimulationConstants::scale;
-                renderer->DebugDrawLine(lineStart, lineEnd, grid_color_, persistent);
+                for (uint64_t z = 0; z <= full_dimensions.z; ++z) {
+                    lineStart.z = world_origin_offset_.z + z * SimulationConstants::scale;
+                    lineEnd.z = world_origin_offset_.z + z * SimulationConstants::scale;
+                    renderer->DebugDrawLine(ConvertToFaceCS(cube_face_cs[i], lineStart),
+                                            ConvertToFaceCS(cube_face_cs[i], lineEnd),
+                                            grid_color_,
+                                            persistent);
+                }
             }
         }
     }
@@ -687,40 +1208,103 @@ void EulerFluidSim::DrawGrid(Core::RenderPipeline* renderer, bool persistent) co
 void EulerFluidSim::DrawBoundaryVelocities(Core::RenderPipeline* renderer, bool persistent) const {
     // TODO: skip halo cells
     for (const auto& domain : *domains_) {
-        for (uint64_t x = SimulationDomain::halo_size.x;
-             x < SimulationDomain::dimensions.x - SimulationDomain::halo_size.x;
-             ++x) {
-            for (uint64_t y = SimulationDomain::halo_size.y;
-                 y < SimulationDomain::dimensions.y - SimulationDomain::halo_size.y;
-                 ++y) {
-                for (uint64_t z = SimulationDomain::halo_size.z;
-                     z < SimulationDomain::dimensions.z - SimulationDomain::halo_size.z;
-                     ++z) {
-                    auto world_index = WorldIndex(domain.domain_index_, Index3D{x, y, z});
-                    math::vec3<float> start = world_origin_offset_ + SimulationConstants::scale *
-                                                                         (static_cast<math::vec3<float>>(world_index) +
-                                                                          math::vec3<float>{0.0f, 0.5f, 0.5f});
-                    double arrow_value = (*domain.velocities_x_)[x][y][z];
-                    renderer->DebugDrawArrow(start,
-                                             start + math::vec3<float>{arrow_value * 0.5, 0.0, 0.0},
-                                             fabsf(arrow_value) * 0.25f,
-                                             boundary_velocity_color_x_,
-                                             persistent);
-                    start.x += SimulationConstants::scale * 0.5f;
-                    start.y -= SimulationConstants::scale * 0.5f;
-                    arrow_value = (*domain.velocities_y_)[x][y][z];
-                    renderer->DebugDrawArrow(start,
-                                             start + math::vec3<float>{0.0, arrow_value * 0.5, 0.0},
-                                             fabsf(arrow_value) * 0.25f,
-                                             boundary_velocity_color_y_,
-                                             persistent);
-                    start.z -= SimulationConstants::scale * 0.5f;
-                    arrow_value = (*domain.velocities_z_)[x][y][z];
-                    renderer->DebugDrawArrow(start,
-                                             start + math::vec3<float>{0.0, 0.0, arrow_value * 0.5},
-                                             fabsf(arrow_value) * 0.25f,
-                                             boundary_velocity_color_z_,
-                                             persistent);
+        auto face_index = domain.domain_index_.w;
+
+        for (uint64_t x = 0; x <= SimulationDomain::dimensions.x; ++x) {
+            for (uint64_t y = 0; y <= SimulationDomain::dimensions.y; ++y) {
+                for (uint64_t z = 0; z <= SimulationDomain::dimensions.z; ++z) {
+                    if (x == 0 && y == SimulationDomain::dimensions.y)
+                        continue;
+                    if (y == 0 && x == SimulationDomain::dimensions.x)
+                        continue;
+                    if (y == 0 && x == 0)
+                        continue;
+                    if (y == SimulationDomain::dimensions.y && x == SimulationDomain::dimensions.x)
+                        continue;
+
+                    if (drawCubeSphereCoordinates) {
+                        auto world_index = WorldIndex(static_cast<Index3D>(domain.domain_index_), Index3D{x, y, z});
+                        math::vec3<float> start =
+                            world_origin_offset_ +
+                            SimulationConstants::scale *
+                                (static_cast<math::vec3<float>>(world_index) + math::vec3<float>{0.0f, 0.5f, 0.5f});
+
+                        if (y != SimulationDomain::dimensions.y && z != SimulationDomain::dimensions.z) {
+                            double arrow_value = (*domain.velocities_x_)[x][y][z];
+                            math::vec3<float> arrow{arrow_value * 0.5f, 0.0f, 0.0f};
+                            renderer->DebugDrawArrow(ToWorldCoordinates(face_index, start),
+                                                     ToWorldCoordinates(face_index, start + arrow),
+                                                     fabsf(arrow_value) * 0.25f,
+                                                     boundary_velocity_color_x_,
+                                                     persistent);
+                        }
+                        start.x += SimulationConstants::scale * 0.5f;
+                        start.y -= SimulationConstants::scale * 0.5f;
+                        if (x != SimulationDomain::dimensions.x && z != SimulationDomain::dimensions.z) {
+                            double arrow_value = (*domain.velocities_y_)[x][y][z];
+                            math::vec3<float> arrow{0.0f, arrow_value * 0.5f, 0.0f};
+                            renderer->DebugDrawArrow(ToWorldCoordinates(face_index, start),
+                                                     ToWorldCoordinates(face_index, start + arrow),
+                                                     fabsf(arrow_value) * 0.25f,
+                                                     boundary_velocity_color_y_,
+                                                     persistent);
+                        }
+                        start.y += SimulationConstants::scale * 0.5f;
+                        start.z -= SimulationConstants::scale * 0.5f;
+                        if (x != SimulationDomain::dimensions.x && y != SimulationDomain::dimensions.y) {
+                            double arrow_value = (*domain.velocities_z_)[x][y][z];
+                            math::vec3<float> arrow{0.0f, 0.0f, arrow_value * 0.5f};
+                            renderer->DebugDrawArrow(ToWorldCoordinates(face_index, start),
+                                                     ToWorldCoordinates(face_index, start + arrow),
+                                                     fabsf(arrow_value) * 0.25f,
+                                                     boundary_velocity_color_z_,
+                                                     persistent);
+                        }
+                    } else {
+                        auto world_index = WorldIndex(static_cast<Index3D>(domain.domain_index_), Index3D{x, y, z});
+                        math::vec3<float> start =
+                            world_origin_offset_ +
+                            SimulationConstants::scale *
+                                (static_cast<math::vec3<float>>(world_index) + math::vec3<float>{0.0f, 0.5f, 0.5f});
+
+                        if (y != SimulationDomain::dimensions.y && z != SimulationDomain::dimensions.z) {
+                            double arrow_value = (*domain.velocities_x_)[x][y][z];
+                            math::vec3<float> arrow = ConvertToFaceCS(cube_face_cs[domain.domain_index_.w],
+                                                                      math::vec3<float>{arrow_value * 0.5, 0.0, 0.0});
+                            auto local_start = ConvertToFaceCS(cube_face_cs[domain.domain_index_.w], start);
+                            renderer->DebugDrawArrow(local_start,
+                                                     local_start + arrow,
+                                                     fabsf(arrow_value) * 0.25f,
+                                                     boundary_velocity_color_x_,
+                                                     persistent);
+                        }
+                        start.x += SimulationConstants::scale * 0.5f;
+                        start.y -= SimulationConstants::scale * 0.5f;
+                        if (x != SimulationDomain::dimensions.x && z != SimulationDomain::dimensions.z) {
+                            double arrow_value = (*domain.velocities_y_)[x][y][z];
+                            math::vec3<float> arrow = ConvertToFaceCS(cube_face_cs[domain.domain_index_.w],
+                                                                      math::vec3<float>{0.0, arrow_value * 0.5, 0.0});
+                            auto local_start = ConvertToFaceCS(cube_face_cs[domain.domain_index_.w], start);
+                            renderer->DebugDrawArrow(local_start,
+                                                     local_start + arrow,
+                                                     fabsf(arrow_value) * 0.25f,
+                                                     boundary_velocity_color_y_,
+                                                     persistent);
+                        }
+                        start.y += SimulationConstants::scale * 0.5f;
+                        start.z -= SimulationConstants::scale * 0.5f;
+                        if (x != SimulationDomain::dimensions.x && y != SimulationDomain::dimensions.z) {
+                            double arrow_value = (*domain.velocities_z_)[x][y][z];
+                            math::vec3<float> arrow = ConvertToFaceCS(cube_face_cs[domain.domain_index_.w],
+                                                                      math::vec3<float>{0.0, 0.0, arrow_value * 0.5});
+                            auto local_start = ConvertToFaceCS(cube_face_cs[domain.domain_index_.w], start);
+                            renderer->DebugDrawArrow(local_start,
+                                                     local_start + arrow,
+                                                     fabsf(arrow_value) * 0.25f,
+                                                     boundary_velocity_color_z_,
+                                                     persistent);
+                        }
+                    }
                 }
             }
         }
@@ -735,29 +1319,40 @@ void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, b
     // border cells will have 0 velocity anyway, so we can skip them
     if (cell_subdivision == 1) {
         for (const auto& domain : *domains_) {
-            for (uint64_t x = SimulationDomain::halo_size.x;
-                 x < SimulationDomain::dimensions.x - SimulationDomain::halo_size.x;
-                 ++x) {
-                for (uint64_t y = SimulationDomain::halo_size.y;
-                     y < SimulationDomain::dimensions.y - SimulationDomain::halo_size.y;
-                     ++y) {
-                    for (uint64_t z = SimulationDomain::halo_size.z;
+            auto face_index = domain.domain_index_.w;
+            for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
+                for (size_t y = 0; y < SimulationDomain::dimensions.y; ++y) {
+                    for (size_t z = SimulationDomain::halo_size.z;
                          z < SimulationDomain::dimensions.z - SimulationDomain::halo_size.z;
                          ++z) {
-                        math::vec3<float> nPos =
-                            math::vec3<float>{static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)} +
-                            ValueGridOffset;
-                        math::vec3<float> interpolationPos = domain.DenormalizePosition(nPos);
-                        math::vec3<float> velocity = domain.SampleVelocity(nPos);
-                        interpolationPos +=
-                            world_origin_offset_ + static_cast<math::vec3<float>>(
-                                                       domain.domain_index_ * SimulationDomain::stripped_dimensions) *
-                                                       SimulationConstants::scale;
-                        renderer->DebugDrawArrow(interpolationPos,
-                                                 interpolationPos + velocity,
-                                                 velocity.magnitude() * 0.25f,
-                                                 interpolated_velocity_color_,
-                                                 persistent);
+                        math::vec3<float> nPos = math::vec3<float>{x, y, z} + ValueGridOffset;
+                        if (drawCubeSphereCoordinates) {
+                            math::vec3<float> interpolationPos = domain.DenormalizePosition(nPos);
+                            math::vec3<float> velocity = domain.SampleVelocity(nPos);
+                            interpolationPos += world_origin_offset_ + static_cast<math::vec3<float>>(
+                                                                           static_cast<Index3D>(domain.domain_index_) *
+                                                                           SimulationDomain::stripped_dimensions) *
+                                                                           SimulationConstants::scale;
+                            renderer->DebugDrawArrow(ToWorldCoordinates(face_index, interpolationPos),
+                                                     ToWorldCoordinates(face_index, interpolationPos + velocity),
+                                                     velocity.magnitude() * 0.25f,
+                                                     interpolated_velocity_color_,
+                                                     persistent);
+                        } else {
+                            auto velocity =
+                                ConvertToFaceCS(cube_face_cs[domain.domain_index_.w], domain.SampleVelocity(nPos));
+                            auto interpolationPos = domain.DenormalizePosition(nPos);
+                            interpolationPos += world_origin_offset_ + static_cast<math::vec3<float>>(
+                                                                           static_cast<Index3D>(domain.domain_index_) *
+                                                                           SimulationDomain::stripped_dimensions) *
+                                                                           SimulationConstants::scale;
+                            interpolationPos = ConvertToFaceCS(cube_face_cs[domain.domain_index_.w], interpolationPos);
+                            renderer->DebugDrawArrow(interpolationPos,
+                                                     interpolationPos + velocity,
+                                                     velocity.magnitude() * 0.25f,
+                                                     interpolated_velocity_color_,
+                                                     persistent);
+                        }
                     }
                 }
             }
@@ -765,9 +1360,10 @@ void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, b
     } else {
         // TODO: skip halo cells
         for (const auto& domain : *domains_) {
-            for (uint64_t x = cell_subdivision; x <= (SimulationDomain::dimensions.x - 1) * cell_subdivision; ++x) {
-                for (uint64_t y = cell_subdivision; y <= (SimulationDomain::dimensions.y - 1) * cell_subdivision; ++y) {
-                    for (uint64_t z = cell_subdivision; z <= (SimulationDomain::dimensions.z - 1) * cell_subdivision;
+            auto face_index = domain.domain_index_.w;
+            for (size_t x = cell_subdivision; x <= (SimulationDomain::dimensions.x - 1) * cell_subdivision; ++x) {
+                for (size_t y = cell_subdivision; y <= (SimulationDomain::dimensions.y - 1) * cell_subdivision; ++y) {
+                    for (size_t z = cell_subdivision; z <= (SimulationDomain::dimensions.z - 1) * cell_subdivision;
                          ++z) {
                         math::vec3<float> nPos{static_cast<float>(x) / static_cast<float>(cell_subdivision) +
                                                    1.0f / static_cast<float>(cell_subdivision + 1),
@@ -775,20 +1371,44 @@ void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, b
                                                    1.0f / static_cast<float>(cell_subdivision + 1),
                                                static_cast<float>(z) / static_cast<float>(cell_subdivision) +
                                                    1.0f / static_cast<float>(cell_subdivision + 1)};
-                        math::vec3<float> interpolationPos = domain.DenormalizePosition(nPos);
-                        math::vec3<float> velocity = domain.SampleVelocity(nPos) / static_cast<float>(cell_subdivision);
-                        interpolationPos +=
-                            world_origin_offset_ + static_cast<math::vec3<float>>(
-                                                       domain.domain_index_ * SimulationDomain::stripped_dimensions) *
-                                                       SimulationConstants::scale;
-                        renderer->DebugDrawArrow(interpolationPos,
-                                                 interpolationPos + velocity,
-                                                 velocity.magnitude() * 0.25f,
-                                                 interpolated_velocity_color_,
-                                                 persistent);
+                        if (drawCubeSphereCoordinates) {
+                            math::vec3<float> interpolationPos = domain.DenormalizePosition(nPos);
+                            math::vec3<float> velocity =
+                                domain.SampleVelocity(nPos) / static_cast<float>(cell_subdivision);
+                            interpolationPos += world_origin_offset_ + static_cast<math::vec3<float>>(
+                                                                           static_cast<Index3D>(domain.domain_index_) *
+                                                                           SimulationDomain::stripped_dimensions) *
+                                                                           SimulationConstants::scale;
+                            renderer->DebugDrawArrow(ToWorldCoordinates(face_index, interpolationPos),
+                                                     ToWorldCoordinates(face_index, interpolationPos + velocity),
+                                                     velocity.magnitude() * 0.25f,
+                                                     interpolated_velocity_color_,
+                                                     persistent);
+                        } else {
+                            math::vec3<float> interpolationPos = domain.DenormalizePosition(nPos);
+                            math::vec3<float> velocity =
+                                ConvertToFaceCS(cube_face_cs[domain.domain_index_.w],
+                                                domain.SampleVelocity(nPos) / static_cast<float>(cell_subdivision));
+                            interpolationPos += world_origin_offset_ + static_cast<math::vec3<float>>(
+                                                                           static_cast<Index3D>(domain.domain_index_) *
+                                                                           SimulationDomain::stripped_dimensions) *
+                                                                           SimulationConstants::scale;
+                            interpolationPos = ConvertToFaceCS(cube_face_cs[domain.domain_index_.w], interpolationPos);
+                            renderer->DebugDrawArrow(interpolationPos,
+                                                     interpolationPos + velocity,
+                                                     velocity.magnitude() * 0.25f,
+                                                     interpolated_velocity_color_,
+                                                     persistent);
+                        }
                     }
                 }
             }
         }
     }
+}
+
+math::vec3<float> EulerFluidSim::ToWorldCoordinates(size_t face_index, const math::vec3<float>& pos) const {
+    math::vec3<float> result{pos.x, pos.y, world_origin_offset_.z};
+    result.normalize();
+    return ConvertToFaceCS(cube_face_cs[face_index], result) * pos.z;
 }

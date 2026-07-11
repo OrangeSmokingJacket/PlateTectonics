@@ -181,12 +181,12 @@ void MainLayer::Render() {
     if (mantle_sim_.draw_slice != EulerFluidSim::DrawSlice::None) {
         pipeline_.Init();
 
-        pipeline_.BindSlice(mantle_sim_.RenderTexture(),
+        pipeline_.BindSlice(mantle_sim_.RenderTextures(),
+                            mantle_sim_.max_temperature_color,
                             // TODO: account for scale
                             math::vec3<float>{mantle_sim_.full_dimensions.x,
                                               mantle_sim_.full_dimensions.y,
-                                              mantle_sim_.full_dimensions.z} /
-                                2.0f,
+                                              mantle_sim_.full_dimensions.z},
                             resolution,
                             0);
         pipeline_.SetModelMatrix(math::mat4x4<float>::identity());

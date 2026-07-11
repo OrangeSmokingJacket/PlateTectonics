@@ -261,36 +261,43 @@ namespace Core {
         }
     }
 
-    void RenderPipeline::BindSlice(Engine::Assets::AssetRef<Engine::Assets::Texture3Df> sample,
-                                   const math::vec3<float>& bounds,
-                                   const math::vec2<float>& resolution,
-                                   float plain_offset) {
+    void RenderPipeline::BindSlice(
+        const std::array<Engine::Assets::AssetRef<Engine::Assets::Texture3Df>, 6>& cube_face_samplers,
+        const Engine::Assets::Color& core_color,
+        const math::vec3<float>& bounds,
+        const math::vec2<float>& resolution,
+        float plain_offset) {
         slice_program_.Bind();
         bounded_program_id_ = slice_program_.ProgramId();
 
         Reset();
 
-        texture_id_.SetActiveUnit(0);
-        texture_id_.Bind();
+        for (size_t i = 0; i < cube_face_samplers.size(); ++i) {
+            const auto* texture = cube_face_samplers[i].GetAsset();
+            assert(texture);
 
-        SetTextureParameter<3>(Engine::Assets::TextureFiltering::Linear);
-        // mirrored repeat to avoid false interpolation near borders
-        SetTextureParameter(
-            math::vec3<Engine::Assets::TextureWrapping>{Engine::Assets::TextureWrapping::MirroredRepeat});
+            slice_textures_[i].Bind();
+            slice_textures_[i].SetActiveUnit(i);
 
-        const auto* texture = sample.GetAsset();
-        assert(texture);
-        glTexImage3D(GL_TEXTURE_3D,
-                     0,
-                     GL_RGBA,
-                     texture->Width(),
-                     texture->Height(),
-                     texture->Depth(),
-                     0,
-                     GL_RGBA,
-                     GL_FLOAT,
-                     texture->Data());
-        glGenerateMipmap(GL_TEXTURE_3D);
+            SetTextureParameter<3>(Engine::Assets::TextureFiltering::Linear);
+            // mirrored repeat to avoid false interpolation near borders
+            SetTextureParameter(
+                math::vec3<Engine::Assets::TextureWrapping>{Engine::Assets::TextureWrapping::MirroredRepeat});
+
+            glTexImage3D(GL_TEXTURE_3D,
+                         0,
+                         GL_RGBA,
+                         texture->Width(),
+                         texture->Height(),
+                         texture->Depth(),
+                         0,
+                         GL_RGBA,
+                         GL_FLOAT,
+                         texture->Data());
+            glGenerateMipmap(GL_TEXTURE_3D);
+
+            slice_textures_[i].Unbind();
+        }
 
         {
             GLint uniform_slice_bounds = glGetUniformLocation(bounded_program_id_, "slice_bounds");
@@ -308,9 +315,15 @@ namespace Core {
             glUniform1f(uniform_plain_offset, plain_offset);
         }
         {
-            GLint uniform_tex = glGetUniformLocation(bounded_program_id_, "sample_texture");
+            GLint uniform_color = glGetUniformLocation(bounded_program_id_, "core_color");
+            assert(uniform_color >= 0 && "glGetUniformLocation did not find a value by name");
+            glUniform4f(uniform_color, core_color.r, core_color.g, core_color.b, core_color.a);
+        }
+        {
+            GLint uniform_tex = glGetUniformLocation(bounded_program_id_, "sample_textures");
+            GLint samplers_indices[6] = {0, 1, 2, 3, 4, 5};
             assert(uniform_tex >= 0 && "glGetUniformLocation did not find a value by name");
-            glUniform1i(uniform_tex, 0);
+            glUniform1iv(uniform_tex, 6, samplers_indices);
         }
     }
 
@@ -466,7 +479,7 @@ namespace Core {
 
         VertexBufferObject::Unbind();
         ElementBufferObject::Unbind();
-        TextureObject::Unbind();
+        TextureObject2D::Unbind();
     }
 
     void RenderPipeline::SetBlendingMode(Engine::Assets::BlendMode mode) {

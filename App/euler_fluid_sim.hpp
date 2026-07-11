@@ -15,6 +15,8 @@ namespace Core {
     class RenderPipeline;
 }
 
+// TODO: Adjust simulation parameters closer to reality
+// For now PCG fights numerical errors
 namespace SimulationConstants {
     static constexpr float scale = 1.0f;                // meters
     static constexpr float fixed_time_step = 1 / 100.0; // seconds
@@ -24,37 +26,38 @@ namespace SimulationConstants {
     static constexpr InterpolationType interpolation_type = InterpolationType::Trilinear;
 } // namespace SimulationConstants
 
+// Not all operations read diagonal values, so they could be skipped
+enum class SyncScope : uint8_t { Orthogonal, Full };
+
 // Solver is based upon FLUID SIMULATION SIGGRAPH 2007 Course Notes
 class EulerFluidSim {
     friend SimulationDomain;
 
 public:
     // Dimensions
-    static constexpr Dimensions domains{2, 2, 2};
+    // In vec4 for values are stored xyzw
+    // Domains organized in storage wxyz
+    static constexpr Index4D domains{2, 2, 2, 6};
     static constexpr Dimensions full_dimensions =
-        SimulationDomain::stripped_dimensions * domains + 2ull * SimulationDomain::halo_size;
+        SimulationDomain::stripped_dimensions * static_cast<Index3D>(domains) + 2ull * SimulationDomain::halo_size;
 
     // Temp render ptr to draw grid
     explicit EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThreadPool* thread_pool);
     void Update(float delta_time);
     void RenderDebug(Core::RenderPipeline* renderer) const;
     void SetupRenderTexture();
-    const Core::Engine::Assets::AssetRef<Core::Engine::Assets::Texture3Df>& RenderTexture() const;
+    const std::array<Core::Engine::Assets::AssetRef<Core::Engine::Assets::Texture3Df>, 6>& RenderTextures() const;
 
     void DebugRandomizeBorderVelocities();
 
 private:
-    static constexpr bool IsSolidCell(const Index3D& world_index) {
-        return world_index.x == 0 || world_index.y == 0 || world_index.z == 0 ||
-               world_index.x + 1 >= full_dimensions.x || world_index.y + 1 >= full_dimensions.y ||
-               world_index.z + 1 >= full_dimensions.z;
+    static constexpr bool IsSolidCell(size_t world_index_z) {
+        return world_index_z == 0 || world_index_z + 1 >= full_dimensions.z;
     }
-    void SyncVelocitiesX();
-    void SyncVelocitiesY();
     void SyncVelocitiesZ();
     void SyncVelocities();
-    void SyncGridValues(std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* grid);
-    void SyncCoefficients();
+    void SyncGridValues(std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* grid,
+                        SyncScope scope = SyncScope::Full);
 
     void SetInitialTemperature();
     void PCG();
@@ -63,6 +66,8 @@ private:
     void DrawGrid(Core::RenderPipeline* renderer, bool persistent) const;
     void DrawBoundaryVelocities(Core::RenderPipeline* renderer, bool persistent) const;
     void DrawInterpolatedVelocities(Core::RenderPipeline* renderer, bool persistent) const;
+
+    math::vec3<float> ToWorldCoordinates(size_t face_index, const math::vec3<float>& pos) const;
 
 public:
     enum class DrawSlice : uint8_t {
@@ -114,8 +119,9 @@ private:
     double gravitational_acceleration_ = 9.81;
 
     // Draw
-    Core::Engine::Assets::AssetRef<Core::Engine::Assets::Texture3Df> render_texture_;
+    std::array<Core::Engine::Assets::AssetRef<Core::Engine::Assets::Texture3Df>, 6> render_textures_;
     bool drawGrid = true;
+    bool drawCubeSphereCoordinates = true;
     bool boundaryOnly = false;
     Core::Engine::Assets::SColor grid_color_{180, 180, 180, 80};
 
@@ -124,6 +130,13 @@ private:
     Core::Engine::Assets::SColor boundary_velocity_color_z_ = Core::Engine::Assets::SColors::Blue;
     Core::Engine::Assets::SColor interpolated_velocity_color_ = Core::Engine::Assets::SColors::Cyan;
 };
+
+static_assert(EulerFluidSim::domains[0] == EulerFluidSim::domains[1] && "domains.x and .y always has to be the same");
+static_assert(SimulationDomain::dimensions[0] == SimulationDomain::dimensions[1] &&
+              "dimensions.x and .y always has to be the same");
+static_assert(EulerFluidSim::domains[3] == 6 && "domains.w always has to be 6. It represents a cube face");
+static_assert(SimulationDomain::halo_size[0] == SimulationDomain::halo_size[1] &&
+              "Due to x/y interweaving halos have to match in that direction");
 
 template <size_t AxisIndex>
 constexpr size_t WorldIndex(size_t domain_index, size_t cell_index) {

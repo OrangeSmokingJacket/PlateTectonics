@@ -33,7 +33,8 @@ namespace Core {
         // TODO: submeshes
         void DrawElements(const Engine::Assets::Mesh* mesh, const Engine::Assets::MaterialUnlit* material) const;
         // Slice pass
-        void BindSlice(Engine::Assets::AssetRef<Engine::Assets::Texture3Df> sample,
+        void BindSlice(const std::array<Engine::Assets::AssetRef<Engine::Assets::Texture3Df>, 6>& cube_face_samplers,
+                       const Engine::Assets::Color& core_color,
                        const math::vec3<float>& bounds,
                        const math::vec2<float>& resolution,
                        float plain_offset = 0);
@@ -72,13 +73,14 @@ namespace Core {
 
         // Slice mode
         ShaderProgram slice_program_;
+        std::array<TextureObject3D, 6> slice_textures_;
 
         // Common Renderer data
         VertexArrayObject VAO_;
         std::array<VertexBufferObject, Engine::Assets::VertexAttributesCount> VBOs_;
         ElementBufferObject EBO_;
         UniformBufferObject camera_matrices_UBO_;
-        TextureObject texture_id_;
+        TextureObject2D texture_id_;
         ShaderGenerator::Unlit::VariantShaderProgram unlit_programs_;
         uint32_t bounded_attributes_count_ = 0;
         GLuint bounded_program_id_ = GL_INVALID_INDEX;

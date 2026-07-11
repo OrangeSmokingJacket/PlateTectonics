@@ -14,10 +14,33 @@ uniform vec2 resolution;
 
 uniform float plain_offset;
 
-uniform sampler3D sample_texture;
+uniform vec4 core_color;
+uniform sampler3D sample_textures[6];
 
 // Outputs
 out vec4 color;
+
+// facing order from EulerFluidSim:
+// Z+, X+, Y+, Z-, X-, Y-
+int GetFaceIndex(vec3 v) {
+   vec3 abs_v = abs(v);
+   float m = max(max(abs_v.x, abs_v.y), abs_v.z);
+   return int(v.x == m) +
+          2 * int(v.y == m) +
+          3 * int(v.z == -m) +
+          4 * int(v.x == -m) +
+          5 * int(v.y == -m);
+}
+
+// For consistency axes have to be passed, but for performance it is much cheaper to hard-code them here
+vec3 ConvertToLocal(int face_index, vec3 v) {
+    return int(face_index == 0) * v +
+           int(face_index == 1) * v.yzx +
+           int(face_index == 2) * v.zxy +
+           int(face_index == 3) * (-v) +
+           int(face_index == 4) * (-v.yzx) +
+           int(face_index == 5) * (-v.zxy);
+}
 
 void main() {
     mat4 inverse_perspective = inverse(perspective_matrix);
@@ -44,19 +67,29 @@ void main() {
 
     vec3 model_coords = (inverse_model * vec4(plain_intersection, 1.0f)).xyz;
 
-    if (model_coords.x > slice_bounds.x ||
-        model_coords.x < -slice_bounds.x ||
-        model_coords.y > slice_bounds.y ||
-        model_coords.y < -slice_bounds.y ||
-        model_coords.z > slice_bounds.z ||
-        model_coords.z < -slice_bounds.z) {
+    // slice_bounds is already half the sim size
+    // x and y are equals here
+    float inner_sphere_radius = slice_bounds.x / 2;
+    float outer_sphere_radius = inner_sphere_radius + slice_bounds.z;
+
+    if (length(model_coords) > outer_sphere_radius) {
         discard;
+    } else if (length(model_coords) < inner_sphere_radius) {
+        color = core_color;
+        return;
     }
 
+    // transform into appropriate grid coordinates
+    int face_index = GetFaceIndex(model_coords);
+    vec3 local_model_coords = ConvertToLocal(face_index, model_coords);
+    vec3 base_lmc = (local_model_coords / local_model_coords.z) * inner_sphere_radius;
+    vec3 regular_grid_coords = vec3(base_lmc.x, base_lmc.y, length(local_model_coords) - inner_sphere_radius);
     // bring to [0,1] range
-    vec3 uv_coords = (model_coords + slice_bounds) / slice_bounds * 0.5f;
+    vec3 uv_coords = vec3(regular_grid_coords.x + inner_sphere_radius,
+                          regular_grid_coords.y + inner_sphere_radius,
+                          regular_grid_coords.z) / slice_bounds;
 
-    color = texture(sample_texture, uv_coords);
+    color = texture(sample_textures[face_index], uv_coords);
 
     vec4 clip = perspective_matrix * view_matrix * vec4(plain_intersection, 1.0);
     float z_ndc = clip.z / clip.w;

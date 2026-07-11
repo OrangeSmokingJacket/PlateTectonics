@@ -71,4 +71,13 @@ namespace math {
         return result;
     }
 
+    template <typename T, size_t Dimensions>
+    [[nodiscard]] constexpr T component_sum(const impl::vector<T, Dimensions>& input) noexcept {
+        T result{0};
+        for (size_t i = 0; i < Dimensions; ++i) {
+            result += input[i];
+        }
+        return result;
+    }
+
 } // namespace math
