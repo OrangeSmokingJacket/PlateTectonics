@@ -115,7 +115,7 @@ static constexpr std::pair<size_t, size_t> DestinationRange(int dir, size_t axis
                 return {0, SimulationDomain::halo_size[axis_index]};
             case 0:
                 return {SimulationDomain::halo_size[axis_index],
-                        SimulationDomain::stripped_dimensions[axis_index] + Stagger[axis_index]};
+                        SimulationDomain::real_dimensions[axis_index] + Stagger[axis_index]};
             case 1:
                 return {SimulationDomain::dimensions[axis_index] - SimulationDomain::halo_size[axis_index],
                         SimulationDomain::halo_size[axis_index] + Stagger[axis_index]};
@@ -128,7 +128,7 @@ static constexpr std::pair<size_t, size_t> DestinationRange(int dir, size_t axis
                 return {0, SimulationDomain::halo_size[axis_index] - Stagger[axis_index]};
             case 0:
                 return {SimulationDomain::halo_size[axis_index],
-                        SimulationDomain::stripped_dimensions[axis_index] - Stagger[axis_index]};
+                        SimulationDomain::real_dimensions[axis_index] - Stagger[axis_index]};
             case 1:
                 return {SimulationDomain::dimensions[axis_index], SimulationDomain::halo_size[axis_index]};
             default:
@@ -143,7 +143,7 @@ namespace SameW {
     static constexpr size_t SourceAdjustment(int dir, size_t axis_index) {
         switch (dir) {
             case -1:
-                return SimulationDomain::stripped_dimensions[axis_index];
+                return SimulationDomain::real_dimensions[axis_index];
             case 0:
                 return SimulationDomain::halo_size[axis_index];
             case 1:
@@ -279,8 +279,8 @@ void FillMixedCornerHalos(std::array<SimulationDomain, Cardinality(EulerFluidSim
               grid);
         auto [hx, cx] = DestinationRange<Stagger>(dx, 0);
         auto [hy, cy] = DestinationRange<Stagger>(dy, 1);
-        int64_t shift_x = in_x ? dx * static_cast<int64_t>(SimulationDomain::stripped_dimensions[0]) : 0;
-        int64_t shift_y = in_y ? dy * static_cast<int64_t>(SimulationDomain::stripped_dimensions[1]) : 0;
+        int64_t shift_x = in_x ? dx * static_cast<int64_t>(SimulationDomain::real_dimensions[0]) : 0;
+        int64_t shift_y = in_y ? dy * static_cast<int64_t>(SimulationDomain::real_dimensions[1]) : 0;
         for (size_t i = 0; i < cx; ++i) {
             for (size_t j = 0; j < cy; ++j) {
                 for (size_t k = 0; k < Grid::size_Z; ++k) {
@@ -595,10 +595,6 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
                                                                full_dimensions.y,
                                                                full_dimensions.z));
     }
-    world_origin_offset_.x = -(full_dimensions.x * SimulationConstants::scale * 0.5);
-    world_origin_offset_.y = -(full_dimensions.y * SimulationConstants::scale * 0.5);
-    // x and y are equal, but we have to pick one
-    world_origin_offset_.z = -world_origin_offset_.x;
 
     DebugRandomizeBorderVelocities();
     SetInitialTemperature();
@@ -1103,7 +1099,7 @@ void EulerFluidSim::DrawGrid(Core::RenderPipeline* renderer, bool persistent) co
                                          full_dimensions.z - SimulationDomain::halo_size.z} *
                        SimulationConstants::scale * 0.5f;
             box = ConvertToFaceCS(cube_face_cs[i], box);
-            auto center = ConvertToFaceCS(cube_face_cs[i], math::vec3<float>{0.0f, 0.0f, world_origin_offset_.z});
+            auto center = ConvertToFaceCS(cube_face_cs[i], math::vec3<float>{0.0f, 0.0f, world_origin_offset.z});
             renderer->DebugDrawBox(center, box, grid_color_, persistent);
         } else if (drawCubeSphereCoordinates) {
             // Draw sphere cube
@@ -1111,90 +1107,94 @@ void EulerFluidSim::DrawGrid(Core::RenderPipeline* renderer, bool persistent) co
             // And it is a debug drawing method anyway
             // TODO: xy normalization to maintain relative cell size across faces
             static constexpr Core::Engine::Assets::SColor new_grid_color{255, 255, 0, 255};
-            auto r = world_origin_offset_.z;
+            auto r = world_origin_offset.z;
             // Z aligned lines are batched into a single line
-            for (size_t x = 0; x <= full_dimensions.x; ++x) {
-                for (size_t y = 0; y <= full_dimensions.y; ++y) {
-                    math::vec3<float> grid_point = world_origin_offset_;
-                    grid_point.x += static_cast<float>(x) * SimulationConstants::scale;
-                    grid_point.y += static_cast<float>(y) * SimulationConstants::scale;
-
-                    auto normalized = math::normalize(ConvertToFaceCS(cube_face_cs[i], grid_point));
-                    auto line_start = normalized * r;
+            for (size_t x = 0; x <= real_face_dimensions.x; ++x) {
+                for (size_t y = 0; y <= real_face_dimensions.y; ++y) {
+                    auto line_start =
+                        math::vec3<float>{world_origin_offset.x + static_cast<float>(x) * SimulationConstants::scale,
+                                          world_origin_offset.y + static_cast<float>(y) * SimulationConstants::scale,
+                                          0.0f};
                     auto line_end =
-                        normalized * (r + static_cast<float>(full_dimensions.z)) * SimulationConstants::scale;
-                    renderer->DebugDrawLine(line_start, line_end, grid_color_, persistent);
+                        math::vec3<float>{world_origin_offset.x + static_cast<float>(x) * SimulationConstants::scale,
+                                          world_origin_offset.y + static_cast<float>(y) * SimulationConstants::scale,
+                                          static_cast<float>(real_face_dimensions.z) * SimulationConstants::scale};
+                    renderer->DebugDrawLine(ToWorldCoordinates(i, line_start),
+                                            ToWorldCoordinates(i, line_end),
+                                            grid_color_,
+                                            persistent);
                 }
             }
             // XY lines do not have that luxury
             // To avoid overdraw, only X+ and Y+ are drawn
-            for (size_t z = 0; z <= full_dimensions.z; ++z) {
-                for (size_t y = 0; y <= full_dimensions.y; ++y) {
-                    for (size_t x = 0; x <= full_dimensions.x; ++x) {
-                        math::vec3<float> grid_point = world_origin_offset_;
-                        grid_point.x += static_cast<float>(x) * SimulationConstants::scale;
-                        grid_point.y += static_cast<float>(y) * SimulationConstants::scale;
+            for (size_t z = 0; z <= real_face_dimensions.z; ++z) {
+                for (size_t y = 0; y <= real_face_dimensions.y; ++y) {
+                    for (size_t x = 0; x <= real_face_dimensions.x; ++x) {
+                        auto line_start = math::vec3<float>{
+                            world_origin_offset.x + static_cast<float>(x) * SimulationConstants::scale,
+                            world_origin_offset.y + static_cast<float>(y) * SimulationConstants::scale,
+                            static_cast<float>(z) * SimulationConstants::scale};
 
-                        auto point_scale = (r + static_cast<float>(z)) * SimulationConstants::scale;
-                        auto line_start = math::normalize(ConvertToFaceCS(cube_face_cs[i], grid_point)) * point_scale;
-
-                        if (x != full_dimensions.x) {
-                            auto grid_x_point = grid_point;
-                            grid_x_point.x += SimulationConstants::scale;
-                            auto line_end_x =
-                                math::normalize(ConvertToFaceCS(cube_face_cs[i], grid_x_point)) * point_scale;
-                            renderer->DebugDrawLine(line_start, line_end_x, grid_color_, persistent);
+                        if (x != real_face_dimensions.x) {
+                            auto line_end = math::vec3<float>{
+                                world_origin_offset.x + static_cast<float>(x + 1) * SimulationConstants::scale,
+                                world_origin_offset.y + static_cast<float>(y) * SimulationConstants::scale,
+                                static_cast<float>(z) * SimulationConstants::scale};
+                            renderer->DebugDrawLine(ToWorldCoordinates(i, line_start),
+                                                    ToWorldCoordinates(i, line_end),
+                                                    grid_color_,
+                                                    persistent);
                         }
-                        if (y != full_dimensions.y) {
-                            auto grid_y_point = grid_point;
-                            grid_y_point.y += SimulationConstants::scale;
-                            auto line_end_y =
-                                math::normalize(ConvertToFaceCS(cube_face_cs[i], grid_y_point)) * point_scale;
-                            renderer->DebugDrawLine(line_start, line_end_y, grid_color_, persistent);
+                        if (y != real_face_dimensions.y) {
+                            auto line_end = math::vec3<float>{
+                                world_origin_offset.x + static_cast<float>(x) * SimulationConstants::scale,
+                                world_origin_offset.y + static_cast<float>(y + 1) * SimulationConstants::scale,
+                                static_cast<float>(z) * SimulationConstants::scale};
+                            renderer->DebugDrawLine(ToWorldCoordinates(i, line_start),
+                                                    ToWorldCoordinates(i, line_end),
+                                                    grid_color_,
+                                                    persistent);
                         }
                     }
                 }
             }
         } else {
-            math::vec3<float> lineStart = world_origin_offset_;
-            math::vec3<float> lineEnd{world_origin_offset_.x,
-                                      world_origin_offset_.y,
-                                      world_origin_offset_.z + full_dimensions.z * SimulationConstants::scale};
-            for (uint64_t x = 0; x <= full_dimensions.x; ++x) {
-                lineStart.x = world_origin_offset_.x + x * SimulationConstants::scale;
-                lineEnd.x = world_origin_offset_.x + x * SimulationConstants::scale;
-                for (uint64_t y = 0; y <= full_dimensions.y; ++y) {
-                    lineStart.y = world_origin_offset_.y + y * SimulationConstants::scale;
-                    lineEnd.y = world_origin_offset_.y + y * SimulationConstants::scale;
+            math::vec3<float> lineStart = world_origin_offset;
+            math::vec3<float> lineEnd{world_origin_offset.x,
+                                      world_origin_offset.y,
+                                      world_origin_offset.z + real_face_dimensions.z * SimulationConstants::scale};
+            for (uint64_t x = 0; x <= real_face_dimensions.x; ++x) {
+                lineStart.x = world_origin_offset.x + x * SimulationConstants::scale;
+                lineEnd.x = world_origin_offset.x + x * SimulationConstants::scale;
+                for (uint64_t y = 0; y <= real_face_dimensions.y; ++y) {
+                    lineStart.y = world_origin_offset.y + y * SimulationConstants::scale;
+                    lineEnd.y = world_origin_offset.y + y * SimulationConstants::scale;
                     renderer->DebugDrawLine(ConvertToFaceCS(cube_face_cs[i], lineStart),
                                             ConvertToFaceCS(cube_face_cs[i], lineEnd),
                                             grid_color_,
                                             persistent);
                 }
-                lineStart.y = world_origin_offset_.y;
+                lineStart.y = world_origin_offset.y;
                 // lineEnd is already set
-                // lineEnd.y = world_origin_offset_.y + dimensions.y * SimulationConstants::scale;
-                for (uint64_t z = 0; z <= full_dimensions.z; ++z) {
-                    lineStart.z = world_origin_offset_.z + z * SimulationConstants::scale;
-                    lineEnd.z = world_origin_offset_.z + z * SimulationConstants::scale;
+                for (uint64_t z = 0; z <= real_face_dimensions.z; ++z) {
+                    lineStart.z = world_origin_offset.z + z * SimulationConstants::scale;
+                    lineEnd.z = world_origin_offset.z + z * SimulationConstants::scale;
                     renderer->DebugDrawLine(ConvertToFaceCS(cube_face_cs[i], lineStart),
                                             ConvertToFaceCS(cube_face_cs[i], lineEnd),
                                             grid_color_,
                                             persistent);
                 }
-                lineStart.z = world_origin_offset_.z;
+                lineStart.z = world_origin_offset.z;
                 // lineEnd is already set
-                // lineEnd.z = world_origin_offset_.z + dimensions.z * SimulationConstants::scale;
             }
-            lineStart.x = world_origin_offset_.x;
+            lineStart.x = world_origin_offset.x;
             // lineEnd is already set
-            // lineEnd.x = world_origin_offset_.x + dimensions.x * SimulationConstants::scale;
-            for (uint64_t y = 0; y <= full_dimensions.y; ++y) {
-                lineStart.y = world_origin_offset_.y + y * SimulationConstants::scale;
-                lineEnd.y = world_origin_offset_.y + y * SimulationConstants::scale;
-                for (uint64_t z = 0; z <= full_dimensions.z; ++z) {
-                    lineStart.z = world_origin_offset_.z + z * SimulationConstants::scale;
-                    lineEnd.z = world_origin_offset_.z + z * SimulationConstants::scale;
+            for (uint64_t y = 0; y <= real_face_dimensions.y; ++y) {
+                lineStart.y = world_origin_offset.y + y * SimulationConstants::scale;
+                lineEnd.y = world_origin_offset.y + y * SimulationConstants::scale;
+                for (uint64_t z = 0; z <= real_face_dimensions.z; ++z) {
+                    lineStart.z = world_origin_offset.z + z * SimulationConstants::scale;
+                    lineEnd.z = world_origin_offset.z + z * SimulationConstants::scale;
                     renderer->DebugDrawLine(ConvertToFaceCS(cube_face_cs[i], lineStart),
                                             ConvertToFaceCS(cube_face_cs[i], lineEnd),
                                             grid_color_,
@@ -1205,31 +1205,30 @@ void EulerFluidSim::DrawGrid(Core::RenderPipeline* renderer, bool persistent) co
     }
 }
 
+// For sphere coordinates there is a display bug, where XY border velocities have 30 degree misallignment
 void EulerFluidSim::DrawBoundaryVelocities(Core::RenderPipeline* renderer, bool persistent) const {
     // TODO: skip halo cells
     for (const auto& domain : *domains_) {
         auto face_index = domain.domain_index_.w;
-
-        for (uint64_t x = 0; x <= SimulationDomain::dimensions.x; ++x) {
-            for (uint64_t y = 0; y <= SimulationDomain::dimensions.y; ++y) {
-                for (uint64_t z = 0; z <= SimulationDomain::dimensions.z; ++z) {
-                    if (x == 0 && y == SimulationDomain::dimensions.y)
-                        continue;
-                    if (y == 0 && x == SimulationDomain::dimensions.x)
-                        continue;
-                    if (y == 0 && x == 0)
-                        continue;
-                    if (y == SimulationDomain::dimensions.y && x == SimulationDomain::dimensions.x)
-                        continue;
-
+        for (size_t x = SimulationDomain::halo_size.x;
+             x <= SimulationDomain::dimensions.x - SimulationDomain::halo_size.x;
+             ++x) {
+            for (size_t y = SimulationDomain::halo_size.y;
+                 y <= SimulationDomain::dimensions.y - SimulationDomain::halo_size.y;
+                 ++y) {
+                for (size_t z = SimulationDomain::halo_size.z;
+                     z <= SimulationDomain::dimensions.z - SimulationDomain::halo_size.z;
+                     ++z) {
                     if (drawCubeSphereCoordinates) {
-                        auto world_index = WorldIndex(static_cast<Index3D>(domain.domain_index_), Index3D{x, y, z});
-                        math::vec3<float> start =
-                            world_origin_offset_ +
-                            SimulationConstants::scale *
-                                (static_cast<math::vec3<float>>(world_index) + math::vec3<float>{0.0f, 0.5f, 0.5f});
-
-                        if (y != SimulationDomain::dimensions.y && z != SimulationDomain::dimensions.z) {
+                        auto offset = math::vec3<float>{world_origin_offset.x, world_origin_offset.y, 0.0f};
+                        offset -= static_cast<math::vec3<float>>(SimulationDomain::halo_size);
+                        offset += static_cast<math::vec3<float>>(static_cast<Index3D>(domain.domain_index_) *
+                                                                 SimulationDomain::real_dimensions) *
+                                  SimulationConstants::scale;
+                        if (y != SimulationDomain::dimensions.y - SimulationDomain::halo_size.y &&
+                            z != SimulationDomain::dimensions.z - SimulationDomain::halo_size.z) {
+                            auto start = offset + (math::vec3<float>{x, y, z} + math::vec3<float>{0.0f, 0.5f, 0.5f}) *
+                                                      SimulationConstants::scale;
                             double arrow_value = (*domain.velocities_x_)[x][y][z];
                             math::vec3<float> arrow{arrow_value * 0.5f, 0.0f, 0.0f};
                             renderer->DebugDrawArrow(ToWorldCoordinates(face_index, start),
@@ -1238,9 +1237,10 @@ void EulerFluidSim::DrawBoundaryVelocities(Core::RenderPipeline* renderer, bool 
                                                      boundary_velocity_color_x_,
                                                      persistent);
                         }
-                        start.x += SimulationConstants::scale * 0.5f;
-                        start.y -= SimulationConstants::scale * 0.5f;
-                        if (x != SimulationDomain::dimensions.x && z != SimulationDomain::dimensions.z) {
+                        if (x != SimulationDomain::dimensions.x - SimulationDomain::halo_size.x &&
+                            z != SimulationDomain::dimensions.z - SimulationDomain::halo_size.z) {
+                            auto start = offset + (math::vec3<float>{x, y, z} + math::vec3<float>{0.5f, 0.0f, 0.5f}) *
+                                                      SimulationConstants::scale;
                             double arrow_value = (*domain.velocities_y_)[x][y][z];
                             math::vec3<float> arrow{0.0f, arrow_value * 0.5f, 0.0f};
                             renderer->DebugDrawArrow(ToWorldCoordinates(face_index, start),
@@ -1249,9 +1249,10 @@ void EulerFluidSim::DrawBoundaryVelocities(Core::RenderPipeline* renderer, bool 
                                                      boundary_velocity_color_y_,
                                                      persistent);
                         }
-                        start.y += SimulationConstants::scale * 0.5f;
-                        start.z -= SimulationConstants::scale * 0.5f;
-                        if (x != SimulationDomain::dimensions.x && y != SimulationDomain::dimensions.y) {
+                        if (x != SimulationDomain::dimensions.x - SimulationDomain::halo_size.x &&
+                            y != SimulationDomain::dimensions.y - SimulationDomain::halo_size.y) {
+                            auto start = offset + (math::vec3<float>{x, y, z} + math::vec3<float>{0.5f, 0.5f, 0.0f}) *
+                                                      SimulationConstants::scale;
                             double arrow_value = (*domain.velocities_z_)[x][y][z];
                             math::vec3<float> arrow{0.0f, 0.0f, arrow_value * 0.5f};
                             renderer->DebugDrawArrow(ToWorldCoordinates(face_index, start),
@@ -1263,7 +1264,7 @@ void EulerFluidSim::DrawBoundaryVelocities(Core::RenderPipeline* renderer, bool 
                     } else {
                         auto world_index = WorldIndex(static_cast<Index3D>(domain.domain_index_), Index3D{x, y, z});
                         math::vec3<float> start =
-                            world_origin_offset_ +
+                            world_origin_offset +
                             SimulationConstants::scale *
                                 (static_cast<math::vec3<float>>(world_index) + math::vec3<float>{0.0f, 0.5f, 0.5f});
 
@@ -1317,11 +1318,16 @@ void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, b
     renderer->ReserveLineSpace(interpolated_velocity_color_, arrow_count, persistent);
 
     // border cells will have 0 velocity anyway, so we can skip them
+    auto r = world_origin_offset.z;
     if (cell_subdivision == 1) {
         for (const auto& domain : *domains_) {
             auto face_index = domain.domain_index_.w;
-            for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
-                for (size_t y = 0; y < SimulationDomain::dimensions.y; ++y) {
+            for (size_t x = SimulationDomain::halo_size.x;
+                 x < SimulationDomain::dimensions.x - SimulationDomain::halo_size.x;
+                 ++x) {
+                for (size_t y = SimulationDomain::halo_size.y;
+                     y < SimulationDomain::dimensions.y - SimulationDomain::halo_size.y;
+                     ++y) {
                     for (size_t z = SimulationDomain::halo_size.z;
                          z < SimulationDomain::dimensions.z - SimulationDomain::halo_size.z;
                          ++z) {
@@ -1329,10 +1335,13 @@ void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, b
                         if (drawCubeSphereCoordinates) {
                             math::vec3<float> interpolationPos = domain.DenormalizePosition(nPos);
                             math::vec3<float> velocity = domain.SampleVelocity(nPos);
-                            interpolationPos += world_origin_offset_ + static_cast<math::vec3<float>>(
-                                                                           static_cast<Index3D>(domain.domain_index_) *
-                                                                           SimulationDomain::stripped_dimensions) *
-                                                                           SimulationConstants::scale;
+                            interpolationPos.x += world_origin_offset.x;
+                            interpolationPos.y += world_origin_offset.y;
+                            interpolationPos -= static_cast<math::vec3<float>>(SimulationDomain::halo_size);
+                            interpolationPos +=
+                                static_cast<math::vec3<float>>(static_cast<Index3D>(domain.domain_index_) *
+                                                               SimulationDomain::real_dimensions) *
+                                SimulationConstants::scale;
                             renderer->DebugDrawArrow(ToWorldCoordinates(face_index, interpolationPos),
                                                      ToWorldCoordinates(face_index, interpolationPos + velocity),
                                                      velocity.magnitude() * 0.25f,
@@ -1342,10 +1351,10 @@ void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, b
                             auto velocity =
                                 ConvertToFaceCS(cube_face_cs[domain.domain_index_.w], domain.SampleVelocity(nPos));
                             auto interpolationPos = domain.DenormalizePosition(nPos);
-                            interpolationPos += world_origin_offset_ + static_cast<math::vec3<float>>(
-                                                                           static_cast<Index3D>(domain.domain_index_) *
-                                                                           SimulationDomain::stripped_dimensions) *
-                                                                           SimulationConstants::scale;
+                            interpolationPos += world_origin_offset + static_cast<math::vec3<float>>(
+                                                                          static_cast<Index3D>(domain.domain_index_) *
+                                                                          SimulationDomain::real_dimensions) *
+                                                                          SimulationConstants::scale;
                             interpolationPos = ConvertToFaceCS(cube_face_cs[domain.domain_index_.w], interpolationPos);
                             renderer->DebugDrawArrow(interpolationPos,
                                                      interpolationPos + velocity,
@@ -1361,9 +1370,9 @@ void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, b
         // TODO: skip halo cells
         for (const auto& domain : *domains_) {
             auto face_index = domain.domain_index_.w;
-            for (size_t x = cell_subdivision; x <= (SimulationDomain::dimensions.x - 1) * cell_subdivision; ++x) {
-                for (size_t y = cell_subdivision; y <= (SimulationDomain::dimensions.y - 1) * cell_subdivision; ++y) {
-                    for (size_t z = cell_subdivision; z <= (SimulationDomain::dimensions.z - 1) * cell_subdivision;
+            for (size_t x = cell_subdivision; x < (SimulationDomain::dimensions.x - 1) * cell_subdivision; ++x) {
+                for (size_t y = cell_subdivision; y < (SimulationDomain::dimensions.y - 1) * cell_subdivision; ++y) {
+                    for (size_t z = cell_subdivision; z < (SimulationDomain::dimensions.z - 1) * cell_subdivision;
                          ++z) {
                         math::vec3<float> nPos{static_cast<float>(x) / static_cast<float>(cell_subdivision) +
                                                    1.0f / static_cast<float>(cell_subdivision + 1),
@@ -1375,10 +1384,13 @@ void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, b
                             math::vec3<float> interpolationPos = domain.DenormalizePosition(nPos);
                             math::vec3<float> velocity =
                                 domain.SampleVelocity(nPos) / static_cast<float>(cell_subdivision);
-                            interpolationPos += world_origin_offset_ + static_cast<math::vec3<float>>(
-                                                                           static_cast<Index3D>(domain.domain_index_) *
-                                                                           SimulationDomain::stripped_dimensions) *
-                                                                           SimulationConstants::scale;
+                            interpolationPos.x += world_origin_offset.x;
+                            interpolationPos.y += world_origin_offset.y;
+                            interpolationPos -= static_cast<math::vec3<float>>(SimulationDomain::halo_size);
+                            interpolationPos +=
+                                static_cast<math::vec3<float>>(static_cast<Index3D>(domain.domain_index_) *
+                                                               SimulationDomain::real_dimensions) *
+                                SimulationConstants::scale;
                             renderer->DebugDrawArrow(ToWorldCoordinates(face_index, interpolationPos),
                                                      ToWorldCoordinates(face_index, interpolationPos + velocity),
                                                      velocity.magnitude() * 0.25f,
@@ -1389,10 +1401,10 @@ void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, b
                             math::vec3<float> velocity =
                                 ConvertToFaceCS(cube_face_cs[domain.domain_index_.w],
                                                 domain.SampleVelocity(nPos) / static_cast<float>(cell_subdivision));
-                            interpolationPos += world_origin_offset_ + static_cast<math::vec3<float>>(
-                                                                           static_cast<Index3D>(domain.domain_index_) *
-                                                                           SimulationDomain::stripped_dimensions) *
-                                                                           SimulationConstants::scale;
+                            interpolationPos += world_origin_offset + static_cast<math::vec3<float>>(
+                                                                          static_cast<Index3D>(domain.domain_index_) *
+                                                                          SimulationDomain::real_dimensions) *
+                                                                          SimulationConstants::scale;
                             interpolationPos = ConvertToFaceCS(cube_face_cs[domain.domain_index_.w], interpolationPos);
                             renderer->DebugDrawArrow(interpolationPos,
                                                      interpolationPos + velocity,
@@ -1408,7 +1420,7 @@ void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, b
 }
 
 math::vec3<float> EulerFluidSim::ToWorldCoordinates(size_t face_index, const math::vec3<float>& pos) const {
-    math::vec3<float> result{pos.x, pos.y, world_origin_offset_.z};
-    result.normalize();
-    return ConvertToFaceCS(cube_face_cs[face_index], result) * pos.z;
+    math::vec3<float> result{pos.x, pos.y, world_origin_offset.z};
+    result /= result.magnitude() / (inner_sphere_radius + pos.z);
+    return ConvertToFaceCS(cube_face_cs[face_index], result);
 }

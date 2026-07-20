@@ -181,13 +181,14 @@ void MainLayer::Render() {
     if (mantle_sim_.draw_slice != EulerFluidSim::DrawSlice::None) {
         pipeline_.Init();
 
+        // TODO: adjust plain offset with user inputs
         pipeline_.BindSlice(mantle_sim_.RenderTextures(),
                             mantle_sim_.max_temperature_color,
-                            // TODO: account for scale
-                            math::vec3<float>{mantle_sim_.full_dimensions.x,
-                                              mantle_sim_.full_dimensions.y,
-                                              mantle_sim_.full_dimensions.z},
+                            static_cast<math::vec3<uint32_t>>(EulerFluidSim::real_face_dimensions),
+                            static_cast<math::vec3<uint32_t>>(SimulationDomain::halo_size),
+                            SimulationConstants::scale,
                             resolution,
+                            Core::Engine::Assets::TextureFiltering::Nearest,
                             0);
         pipeline_.SetModelMatrix(math::mat4x4<float>::identity());
         pipeline_.DrawSlice();

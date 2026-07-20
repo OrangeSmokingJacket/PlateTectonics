@@ -35,8 +35,11 @@ namespace Core {
         // Slice pass
         void BindSlice(const std::array<Engine::Assets::AssetRef<Engine::Assets::Texture3Df>, 6>& cube_face_samplers,
                        const Engine::Assets::Color& core_color,
-                       const math::vec3<float>& bounds,
+                       const math::vec3<uint32_t>& face_dimensions,
+                       const math::vec3<uint32_t>& halo,
+                       float cell_size,
                        const math::vec2<float>& resolution,
+                       Engine::Assets::TextureFiltering filtering,
                        float plain_offset = 0);
         void DrawSlice();
 

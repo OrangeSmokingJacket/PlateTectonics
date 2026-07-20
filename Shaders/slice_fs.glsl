@@ -9,7 +9,12 @@ layout (std140) uniform CameraMatrices {
     mat4 perspective_matrix;
 };
 uniform mat4 model_matrix;
-uniform vec3 slice_bounds;
+
+// TODO: define const dimensions, halo, cell_size in a header
+uniform float cell_size;
+uniform uvec3 face_dimensions;
+uniform uvec3 halo;
+
 uniform vec2 resolution;
 
 uniform float plain_offset;
@@ -22,24 +27,24 @@ out vec4 color;
 
 // facing order from EulerFluidSim:
 // Z+, X+, Y+, Z-, X-, Y-
-int GetFaceIndex(vec3 v) {
+uint GetFaceIndex(vec3 v) {
    vec3 abs_v = abs(v);
    float m = max(max(abs_v.x, abs_v.y), abs_v.z);
-   return int(v.x == m) +
-          2 * int(v.y == m) +
-          3 * int(v.z == -m) +
-          4 * int(v.x == -m) +
-          5 * int(v.y == -m);
+   return uint(v.x == m) +
+          2 * uint(v.y == m) +
+          3 * uint(v.z == -m) +
+          4 * uint(v.x == -m) +
+          5 * uint(v.y == -m);
 }
 
 // For consistency axes have to be passed, but for performance it is much cheaper to hard-code them here
-vec3 ConvertToLocal(int face_index, vec3 v) {
-    return int(face_index == 0) * v +
-           int(face_index == 1) * v.yzx +
-           int(face_index == 2) * v.zxy +
-           int(face_index == 3) * (-v) +
-           int(face_index == 4) * (-v.yzx) +
-           int(face_index == 5) * (-v.zxy);
+vec3 ConvertToLocal(uint face_index, vec3 v) {
+    return float(face_index == 0) * v +
+           float(face_index == 1) * v.yzx +
+           float(face_index == 2) * v.zxy +
+           float(face_index == 3) * (-v) +
+           float(face_index == 4) * (-v.yzx) +
+           float(face_index == 5) * (-v.zxy);
 }
 
 void main() {
@@ -67,10 +72,9 @@ void main() {
 
     vec3 model_coords = (inverse_model * vec4(plain_intersection, 1.0f)).xyz;
 
-    // slice_bounds is already half the sim size
     // x and y are equals here
-    float inner_sphere_radius = slice_bounds.x / 2;
-    float outer_sphere_radius = inner_sphere_radius + slice_bounds.z;
+    float inner_sphere_radius = float(face_dimensions.x) * cell_size * 0.5f;
+    float outer_sphere_radius = inner_sphere_radius + float(face_dimensions.z) * cell_size;
 
     if (length(model_coords) > outer_sphere_radius) {
         discard;
@@ -80,14 +84,17 @@ void main() {
     }
 
     // transform into appropriate grid coordinates
-    int face_index = GetFaceIndex(model_coords);
-    vec3 local_model_coords = ConvertToLocal(face_index, model_coords);
-    vec3 base_lmc = (local_model_coords / local_model_coords.z) * inner_sphere_radius;
-    vec3 regular_grid_coords = vec3(base_lmc.x, base_lmc.y, length(local_model_coords) - inner_sphere_radius);
+    uint face_index = GetFaceIndex(model_coords);
+    vec3 face_coords = ConvertToLocal(face_index, model_coords);
+    vec3 base_grid_coords = normalize(face_coords) * inner_sphere_radius;
+    vec3 regular_grid_coords = vec3(base_grid_coords.x, base_grid_coords.y, length(face_coords) - inner_sphere_radius);
+    float adjusted_radius = inner_sphere_radius + halo.x * cell_size;
     // bring to [0,1] range
-    vec3 uv_coords = vec3(regular_grid_coords.x + inner_sphere_radius,
-                          regular_grid_coords.y + inner_sphere_radius,
-                          regular_grid_coords.z) / slice_bounds;
+    // texture includes halo cells, so actual range has to be smaller
+    // regular_grid_coords.xy is in range: [-adjusted_radius; adjusted_radius]
+    // regular_grid_coords.z is in range: [1; face_dimensions.z + halo.z * 2]
+    vec3 uv_coords = (regular_grid_coords + vec3(adjusted_radius, adjusted_radius, 1.0f)) /
+                     vec3(adjusted_radius * 2.0f, adjusted_radius * 2.0f, face_dimensions.z + float(halo.z * 2));
 
     color = texture(sample_textures[face_index], uv_coords);
 

@@ -264,8 +264,11 @@ namespace Core {
     void RenderPipeline::BindSlice(
         const std::array<Engine::Assets::AssetRef<Engine::Assets::Texture3Df>, 6>& cube_face_samplers,
         const Engine::Assets::Color& core_color,
-        const math::vec3<float>& bounds,
+        const math::vec3<uint32_t>& face_dimensions,
+        const math::vec3<uint32_t>& halo,
+        float cell_size,
         const math::vec2<float>& resolution,
+        Engine::Assets::TextureFiltering filtering,
         float plain_offset) {
         slice_program_.Bind();
         bounded_program_id_ = slice_program_.ProgramId();
@@ -279,10 +282,12 @@ namespace Core {
             slice_textures_[i].Bind();
             slice_textures_[i].SetActiveUnit(i);
 
-            SetTextureParameter<3>(Engine::Assets::TextureFiltering::Linear);
-            // mirrored repeat to avoid false interpolation near borders
-            SetTextureParameter(
-                math::vec3<Engine::Assets::TextureWrapping>{Engine::Assets::TextureWrapping::MirroredRepeat});
+            SetTextureParameter<3>(filtering);
+            // If everything is right, it will never be used
+            // Clamp to edge is the fastest method available
+            // SetTextureParameter(
+            //     math::vec3<Engine::Assets::TextureWrapping>{Engine::Assets::TextureWrapping::ClampToEdge});
+            SetTextureParameter(math::vec3<Engine::Assets::TextureWrapping>{Engine::Assets::TextureWrapping::Repeat});
 
             glTexImage3D(GL_TEXTURE_3D,
                          0,
@@ -300,9 +305,19 @@ namespace Core {
         }
 
         {
-            GLint uniform_slice_bounds = glGetUniformLocation(bounded_program_id_, "slice_bounds");
-            assert(uniform_slice_bounds >= 0 && "glGetUniformLocation did not find a value by name");
-            glUniform3f(uniform_slice_bounds, bounds.x, bounds.y, bounds.z);
+            GLint uniform_face_dimensions = glGetUniformLocation(bounded_program_id_, "face_dimensions");
+            assert(uniform_face_dimensions >= 0 && "glGetUniformLocation did not find a value by name");
+            glUniform3ui(uniform_face_dimensions, face_dimensions.x, face_dimensions.y, face_dimensions.z);
+        }
+        {
+            GLint uniform_halo = glGetUniformLocation(bounded_program_id_, "halo");
+            assert(uniform_halo >= 0 && "glGetUniformLocation did not find a value by name");
+            glUniform3ui(uniform_halo, halo.x, halo.y, halo.z);
+        }
+        {
+            GLint uniform_cell_size = glGetUniformLocation(bounded_program_id_, "cell_size");
+            assert(uniform_cell_size >= 0 && "glGetUniformLocation did not find a value by name");
+            glUniform1f(uniform_cell_size, cell_size);
         }
         {
             GLint uniform_resolution = glGetUniformLocation(bounded_program_id_, "resolution");

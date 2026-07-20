@@ -38,8 +38,15 @@ public:
     // In vec4 for values are stored xyzw
     // Domains organized in storage wxyz
     static constexpr Index4D domains{2, 2, 2, 6};
-    static constexpr Dimensions full_dimensions =
-        SimulationDomain::stripped_dimensions * static_cast<Index3D>(domains) + 2ull * SimulationDomain::halo_size;
+    static constexpr Dimensions real_face_dimensions =
+        SimulationDomain::real_dimensions * static_cast<Index3D>(domains);
+    static constexpr Dimensions full_dimensions = real_face_dimensions + 2ull * SimulationDomain::halo_size;
+    static constexpr math::vec3<float> world_origin_offset{
+        -(real_face_dimensions[0] * SimulationConstants::scale * 0.5f),
+        -(real_face_dimensions[1] * SimulationConstants::scale * 0.5f),
+        // x and y are equal, but we have to pick one
+        real_face_dimensions[0] * SimulationConstants::scale * 0.5f};
+    static constexpr float inner_sphere_radius = world_origin_offset[2];
 
     // Temp render ptr to draw grid
     explicit EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThreadPool* thread_pool);
@@ -109,8 +116,6 @@ private:
     // Calculation related data
     // per cell values are allocated on the heap
     std::unique_ptr<std::array<SimulationDomain, Cardinality(domains)>> domains_;
-
-    math::vec3<float> world_origin_offset_;
 
     // Actual values
     double crust_temperature_ = 0;      // K
