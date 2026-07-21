@@ -18,7 +18,7 @@ namespace Core {
 // TODO: Adjust simulation parameters closer to reality
 // For now PCG fights numerical errors
 namespace SimulationConstants {
-    static constexpr float scale = 1.0f;                // meters
+    static constexpr float scale = 2.0f;                // meters
     static constexpr float fixed_time_step = 1 / 100.0; // seconds
     static constexpr double density = 1000.0;           // kg/m^3
     static constexpr double solver_tolerance = 1.0e-6;
@@ -94,8 +94,8 @@ public:
     // Velocities
     bool draw_boundary_velocities = false;
     bool draw_interpolated_velocities = true;
-    int cell_subdivision = 1;
-    int max_cell_subdivision = 4;
+    int cell_sample_count = 1;
+    int max_cell_sample_count = 4;
     // Temperature
     Core::Engine::Assets::Color min_temperature_color =
         Core::Engine::Assets::FromSColor(Core::Engine::Assets::SColor{12, 22, 188, 255});
@@ -126,8 +126,6 @@ private:
     // Draw
     std::array<Core::Engine::Assets::AssetRef<Core::Engine::Assets::Texture3Df>, 6> render_textures_;
     bool drawGrid = true;
-    bool drawCubeSphereCoordinates = true;
-    bool boundaryOnly = false;
     Core::Engine::Assets::SColor grid_color_{180, 180, 180, 80};
 
     Core::Engine::Assets::SColor boundary_velocity_color_x_ = Core::Engine::Assets::SColors::Red;

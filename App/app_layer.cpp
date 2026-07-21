@@ -254,9 +254,9 @@ void MainLayer::HandleImGUI() {
             ImGui::Checkbox("Draw Boundary Velocities", &mantle_sim_.draw_boundary_velocities);
             ImGui::Checkbox("Interpolate Velocities", &mantle_sim_.draw_interpolated_velocities);
             ImGui::SliderInt("Per Cell interpolations",
-                             &mantle_sim_.cell_subdivision,
+                             &mantle_sim_.cell_sample_count,
                              1,
-                             mantle_sim_.max_cell_subdivision);
+                             mantle_sim_.max_cell_sample_count);
 
             ImGui::Unindent(10.0f);
         }

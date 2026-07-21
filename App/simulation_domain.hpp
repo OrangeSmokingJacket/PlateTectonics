@@ -59,9 +59,9 @@ class EulerFluidSim;
 struct SimulationDomain {
     // TODO: dimensions up to 64 or higher to minimize halo cells memory usage
     // [] is used because of constexpr and that array is initialized by the constructor
-    static constexpr Dimensions dimensions{6, 6, 6};
+    static constexpr Dimensions real_dimensions{4, 4, 4};
     static constexpr Dimensions halo_size{1, 1, 1};
-    static constexpr Dimensions real_dimensions{dimensions - 2ull * halo_size};
+    static constexpr Dimensions dimensions = real_dimensions + 2ull * halo_size;
     static constexpr Dimensions velocitiesXDimensions{dimensions[0] + 1, dimensions[1], dimensions[2]};
     static constexpr Dimensions velocitiesYDimensions{dimensions[0], dimensions[1] + 1, dimensions[2]};
     static constexpr Dimensions velocitiesZDimensions{dimensions[0], dimensions[1], dimensions[2] + 1};
