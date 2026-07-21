@@ -376,8 +376,8 @@ void SyncGridValues(std::array<SimulationDomain, Cardinality(EulerFluidSim::doma
                                             w_neighbours[dw].y_minus);
                                     }
                                 }
-                                for (int64_t i = 0; i < cx; ++i) {
-                                    for (int64_t j = 0; j < cy; ++j) {
+                                for (int64_t i = 0; i < static_cast<int64_t>(cx); ++i) {
+                                    for (int64_t j = 0; j < static_cast<int64_t>(cy); ++j) {
                                         for (size_t k = 0; k < cz; ++k) {
                                             int64_t from_i = adj.x_scan_dir == DifferentW::ScanDir::Forward ? j : -j;
                                             int64_t from_j = adj.y_scan_dir == DifferentW::ScanDir::Forward ? i : -i;
@@ -494,7 +494,7 @@ void SyncGridVelocitiesXY(std::array<SimulationDomain, Cardinality(EulerFluidSim
                                 }
                                 for (int64_t i = 0; i < static_cast<int64_t>(x_cx); ++i) {
                                     for (int64_t j = 0; j < static_cast<int64_t>(x_cy); ++j) {
-                                        for (size_t k = 0; k < static_cast<int64_t>(x_cz); ++k) {
+                                        for (size_t k = 0; k < x_cz; ++k) {
                                             auto mult = adj.y_scan_dir == DifferentW::ScanDir::Forward ? 1 : -1;
                                             int64_t from_i = adj.x_scan_dir == DifferentW::ScanDir::Forward ? j : -j;
                                             int64_t from_j = adj.y_scan_dir == DifferentW::ScanDir::Forward
@@ -509,7 +509,7 @@ void SyncGridVelocitiesXY(std::array<SimulationDomain, Cardinality(EulerFluidSim
                                 }
                                 for (int64_t i = 0; i < static_cast<int64_t>(y_cx); ++i) {
                                     for (int64_t j = 0; j < static_cast<int64_t>(y_cy); ++j) {
-                                        for (size_t k = 0; k < static_cast<int64_t>(y_cz); ++k) {
+                                        for (size_t k = 0; k < y_cz; ++k) {
                                             auto mult = adj.x_scan_dir == DifferentW::ScanDir::Forward ? 1 : -1;
                                             int64_t from_i = adj.x_scan_dir == DifferentW::ScanDir::Forward
                                                                  ? j
@@ -905,24 +905,22 @@ void EulerFluidSim::PCG() {
     SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
     double sigma = 0;
     {
-        std::vector<std::future<double>> partial_dot_products;
-        partial_dot_products.reserve(Cardinality(domains));
+        std::latch sync_latch{Cardinality(domains)};
+        std::atomic<double> dot_prod{0.0};
 
         for (size_t i = 0; i < Cardinality(domains); ++i) {
             std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-            auto promise = std::make_shared<std::promise<double>>();
-            partial_dot_products.push_back(promise->get_future());
-            thread_pool_->Enqueue([domain_ref, promise]() {
+            thread_pool_->Enqueue([domain_ref, &dot_prod, &sync_latch]() {
                 auto& domain = domain_ref.get();
                 domain.search_->CopyFrom(*domain.auxiliary_);
-                promise->set_value(
+                dot_prod.fetch_add(
                     domain.RealCellsDotProduct(&SimulationDomain::auxiliary_, &SimulationDomain::residual_));
+                sync_latch.count_down();
             });
         }
 
-        for (auto& res : partial_dot_products) {
-            sigma += res.get();
-        }
+        sync_latch.wait();
+        sigma = dot_prod.load();
     }
 
     for (last_PCG_iteration_count = 0; last_PCG_iteration_count < SimulationConstants::max_solver_iterations;
@@ -947,51 +945,44 @@ void EulerFluidSim::PCG() {
         SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
         double dot_product = 0;
         {
-            std::vector<std::future<double>> partial_dot_products;
-            partial_dot_products.reserve(Cardinality(domains));
+            std::latch sync_latch{Cardinality(domains)};
+            std::atomic<double> dot_prod{0.0};
 
             for (size_t i = 0; i < Cardinality(domains); ++i) {
                 std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-                auto promise = std::make_shared<std::promise<double>>();
-                partial_dot_products.push_back(promise->get_future());
-                thread_pool_->Enqueue([domain_ref, promise]() {
+                thread_pool_->Enqueue([domain_ref, &dot_prod, &sync_latch]() {
                     auto& domain = domain_ref.get();
-                    promise->set_value(
+                    dot_prod.fetch_add(
                         domain.RealCellsDotProduct(&SimulationDomain::auxiliary_, &SimulationDomain::search_));
+                    sync_latch.count_down();
                 });
             }
 
-            for (auto& res : partial_dot_products) {
-                dot_product += res.get();
-            }
+            sync_latch.wait();
+            dot_product = dot_prod.load();
         }
 
         double alpha = sigma / dot_product;
 
         {
-            std::vector<std::future<double>> partial_length;
-            partial_length.reserve(Cardinality(domains));
+            std::latch sync_latch{Cardinality(domains)};
+            std::atomic<double> total_error{0.0};
 
             for (size_t i = 0; i < Cardinality(domains); ++i) {
                 std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-                auto promise = std::make_shared<std::promise<double>>();
-                partial_length.push_back(promise->get_future());
-                thread_pool_->Enqueue([domain_ref, promise, alpha]() {
+                thread_pool_->Enqueue([domain_ref, alpha, &total_error, &sync_latch]() {
                     auto& domain = domain_ref.get();
                     for (size_t j = 0; j < domain.cell_pressure_->cardinality; ++j) {
                         *(domain.cell_pressure_->flat_data() + j) += *(domain.search_->flat_data() + j) * alpha;
                         *(domain.residual_->flat_data() + j) -= *(domain.auxiliary_->flat_data() + j) * alpha;
                     }
-                    promise->set_value(domain.RealCellsLength(&SimulationDomain::residual_));
+                    total_error.fetch_add(domain.RealCellsLength(&SimulationDomain::residual_));
+                    sync_latch.count_down();
                 });
             }
 
-            double total_error = 0.0;
-            for (auto& res : partial_length) {
-                total_error += res.get();
-            }
-
-            if (total_error < SimulationConstants::solver_tolerance)
+            sync_latch.wait();
+            if (total_error.load() < SimulationConstants::solver_tolerance)
                 break;
         }
 
@@ -1013,23 +1004,21 @@ void EulerFluidSim::PCG() {
 
         double sigma_new = 0;
         {
-            std::vector<std::future<double>> partial_dot_products;
-            partial_dot_products.reserve(Cardinality(domains));
+            std::latch sync_latch{Cardinality(domains)};
+            std::atomic<double> dot_prod{0.0};
 
             for (size_t i = 0; i < Cardinality(domains); ++i) {
                 std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-                auto promise = std::make_shared<std::promise<double>>();
-                partial_dot_products.push_back(promise->get_future());
-                thread_pool_->Enqueue([domain_ref, promise]() {
+                thread_pool_->Enqueue([domain_ref, &dot_prod, &sync_latch]() {
                     auto& domain = domain_ref.get();
-                    promise->set_value(
+                    dot_prod.fetch_add(
                         domain.RealCellsDotProduct(&SimulationDomain::auxiliary_, &SimulationDomain::residual_));
+                    sync_latch.count_down();
                 });
             }
 
-            for (auto& res : partial_dot_products) {
-                sigma_new += res.get();
-            }
+            sync_latch.wait();
+            sigma_new = dot_prod.load();
         }
         double beta = sigma_new / sigma;
         {
