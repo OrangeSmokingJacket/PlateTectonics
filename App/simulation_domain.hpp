@@ -31,14 +31,13 @@ struct Array3D : public std::array<std::array<std::array<T, Z>, Y>, X> {
 enum class InterpolationType : uint8_t { Trilinear = 0, Cubic = 1 };
 
 template <typename T>
-struct CoefficientValues {
-    T Adiag;
-    T Aplusx;
-    T Aplusy;
-    T Aplusz;
+struct CoefficientsValues {
+    T diag;
+    T plusx;
+    T plusy;
+    T plusz;
 
-    T Sum() const { return Adiag + Aplusx + Aplusy + Aplusz; }
-    bool operator==(const CoefficientValues& value) const = default;
+    bool operator==(const CoefficientsValues& value) const = default;
 };
 
 using Index3D = math::vec3<size_t>;
@@ -67,7 +66,7 @@ struct SimulationDomain {
     static constexpr Dimensions velocitiesZDimensions{dimensions[0], dimensions[1], dimensions[2] + 1};
 
     using GridValues = Array3D<double, dimensions[0], dimensions[1], dimensions[2]>;
-    using GridCoefficientValues = Array3D<CoefficientValues<double>, dimensions[0], dimensions[1], dimensions[2]>;
+    using GridCoefficientsValues = Array3D<CoefficientsValues<double>, dimensions[0], dimensions[1], dimensions[2]>;
     using GridXValues = Array3D<double, velocitiesXDimensions[0], velocitiesXDimensions[1], velocitiesXDimensions[2]>;
     using GridYValues = Array3D<double, velocitiesYDimensions[0], velocitiesYDimensions[1], velocitiesYDimensions[2]>;
     using GridZValues = Array3D<double, velocitiesZDimensions[0], velocitiesZDimensions[1], velocitiesZDimensions[2]>;
@@ -98,9 +97,8 @@ struct SimulationDomain {
     std::unique_ptr<GridXValues> velocities_x_, velocities_x_temp_;
     std::unique_ptr<GridYValues> velocities_y_, velocities_y_temp_;
     std::unique_ptr<GridZValues> velocities_z_, velocities_z_temp_;
-    std::unique_ptr<GridCoefficientValues> coefficient_;
-    std::unique_ptr<GridValues> preconditioner_;
-    std::unique_ptr<GridValues> intermediate_;
+    std::unique_ptr<GridCoefficientsValues> coefficients_;
+    std::unique_ptr<GridCoefficientsValues> preconditioner_;
     std::unique_ptr<GridValues> cell_pressure_divergence_;
     std::unique_ptr<GridValues> residual_;
     std::unique_ptr<GridValues> auxiliary_;

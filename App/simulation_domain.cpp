@@ -11,18 +11,16 @@ SimulationDomain::SimulationDomain(Index4D domain_index)
     , velocities_y_temp_(std::make_unique<GridYValues>())
     , velocities_z_(std::make_unique<GridZValues>())
     , velocities_z_temp_(std::make_unique<GridZValues>())
-    , coefficient_(std::make_unique<GridCoefficientValues>())
-    , preconditioner_(std::make_unique<GridValues>())
-    , intermediate_(std::make_unique<GridValues>())
+    , coefficients_(std::make_unique<GridCoefficientsValues>())
+    , preconditioner_(std::make_unique<GridCoefficientsValues>())
     , cell_pressure_divergence_(std::make_unique<GridValues>())
     , residual_(std::make_unique<GridValues>())
     , auxiliary_(std::make_unique<GridValues>())
     , search_(std::make_unique<GridValues>())
     , domain_index_(domain_index) {
     cell_pressure_->SetToZero();
-    coefficient_->SetToZero();
+    coefficients_->SetToZero();
     preconditioner_->SetToZero();
-    intermediate_->SetToZero();
     cell_pressure_divergence_->SetToZero();
     residual_->SetToZero();
     auxiliary_->SetToZero();
@@ -43,14 +41,17 @@ SimulationDomain::SimulationDomain(Index4D domain_index)
 }
 
 // Some useful macros to maintain readability
-#define Adiag(x, y, z) (*coefficient_)[x][y][z].Adiag
-#define Aplusx(x, y, z) (*coefficient_)[x][y][z].Aplusx
-#define Aplusy(x, y, z) (*coefficient_)[x][y][z].Aplusy
-#define Aplusz(x, y, z) (*coefficient_)[x][y][z].Aplusz
-#define prec(x, y, z) (*preconditioner_)[x][y][z]
-#define intermediate(x, y, z) (*intermediate_)[x][y][z]
+#define Adiag(x, y, z) (*coefficients_)[x][y][z].diag
+#define Aplusx(x, y, z) (*coefficients_)[x][y][z].plusx
+#define Aplusy(x, y, z) (*coefficients_)[x][y][z].plusy
+#define Aplusz(x, y, z) (*coefficients_)[x][y][z].plusz
+#define Mdiag(x, y, z) (*preconditioner_)[x][y][z].diag
+#define Mplusx(x, y, z) (*preconditioner_)[x][y][z].plusx
+#define Mplusy(x, y, z) (*preconditioner_)[x][y][z].plusy
+#define Mplusz(x, y, z) (*preconditioner_)[x][y][z].plusz
 #define aux(x, y, z) (*auxiliary_)[x][y][z]
 #define search(x, y, z) (*search_)[x][y][z]
+#define residual(x, y, z) (*residual_)[x][y][z]
 
 void SimulationDomain::CalculateCoefficients() {
     static constexpr double k =
@@ -78,6 +79,7 @@ void SimulationDomain::CalculateCoefficients() {
                 Aplusx(x, y, z) = -flowPosX * k;
                 Aplusy(x, y, z) = -flowPosY * k;
                 Aplusz(x, y, z) = -flowPosZ * k;
+                // Ideally those have to be synced, but because of static and uniform border, it is not necessary
                 Aplusx(x - 1, y, z) = -flowNegX * k;
                 Aplusy(x, y - 1, z) = -flowNegY * k;
                 Aplusz(x, y, z - 1) = -flowNegZ * k;
@@ -86,10 +88,8 @@ void SimulationDomain::CalculateCoefficients() {
     }
 }
 
+// Incomplete Poisson method, with reciprocals stored
 void SimulationDomain::CalculatePreconditioner() {
-    static constexpr double tuning = 0.97;
-    static constexpr double epsilon = 1.0e-30;
-
     for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
             for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
@@ -97,19 +97,16 @@ void SimulationDomain::CalculatePreconditioner() {
                     continue;
                 }
 
-                double ax = math::square(Aplusx(x - 1, y, z) * prec(x - 1, y, z));
-                double ay = math::square(Aplusy(x, y - 1, z) * prec(x, y - 1, z));
-                double az = math::square(Aplusz(x, y, z - 1) * prec(x, y, z - 1));
+                Mplusx(x, y, z) = (Aplusx(x, y, z) != 0.0) ? -Aplusx(x, y, z) / Adiag(x, y, z) : 0.0;
+                Mplusy(x, y, z) = (Aplusy(x, y, z) != 0.0) ? -Aplusy(x, y, z) / Adiag(x, y, z) : 0.0;
+                Mplusz(x, y, z) = (Aplusz(x, y, z) != 0.0) ? -Aplusz(x, y, z) / Adiag(x, y, z) : 0.0;
+                // Ideally those have to be synced, but because of static and uniform border, it is not necessary
+                Mplusx(x - 1, y, z) = (Aplusx(x - 1, y, z) != 0.0) ? -Aplusx(x - 1, y, z) / Adiag(x, y, z) : 0.0;
+                Mplusy(x, y - 1, z) = (Aplusy(x, y - 1, z) != 0.0) ? -Aplusy(x, y - 1, z) / Adiag(x, y, z) : 0.0;
+                Mplusz(x, y, z - 1) = (Aplusz(x, y, z - 1) != 0.0) ? -Aplusz(x, y, z - 1) / Adiag(x, y, z) : 0.0;
 
-                double bx =
-                    Aplusx(x - 1, y, z) * (Aplusy(x - 1, y, z) + Aplusz(x - 1, y, z)) * math::square(prec(x - 1, y, z));
-                double by =
-                    Aplusy(x, y - 1, z) * (Aplusx(x, y - 1, z) + Aplusz(x, y - 1, z)) * math::square(prec(x, y - 1, z));
-                double bz =
-                    Aplusz(x, y, z - 1) * (Aplusx(x, y, z - 1) + Aplusy(x, y, z - 1)) * math::square(prec(x, y, z - 1));
-
-                double e = Adiag(x, y, z) - ax - ay - az - tuning * (bx + by + bz);
-                prec(x, y, z) = 1 / std::sqrt(e + epsilon);
+                Mdiag(x, y, z) = 1.0 + math::square(Mplusx(x - 1, y, z)) + math::square(Mplusy(x, y - 1, z)) +
+                                 math::square(Mplusz(x, y, z - 1));
             }
         }
     }
@@ -158,30 +155,13 @@ void SimulationDomain::ApplyCoefficients() {
 }
 
 void SimulationDomain::ApplyPreconditioner() {
-    intermediate_->SetToZero();
-    auxiliary_->SetToZero();
-
     for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
             for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
-                // For now all cells are fluid
-                double ax = Aplusx(x - 1, y, z) * prec(x - 1, y, z) * intermediate(x - 1, y, z);
-                double ay = Aplusy(x, y - 1, z) * prec(x, y - 1, z) * intermediate(x, y - 1, z);
-                double az = Aplusz(x, y, z - 1) * prec(x, y, z - 1) * intermediate(x, y, z - 1);
-
-                intermediate(x, y, z) = ((*residual_)[x][y][z] - ax - ay - az) * prec(x, y, z);
-            }
-        }
-    }
-    for (int64_t x = dimensions.x - halo_size.x - 1; x > static_cast<int64_t>(halo_size.x) - 1; x--) {
-        for (int64_t y = dimensions.y - halo_size.y - 1; y > static_cast<int64_t>(halo_size.y) - 1; y--) {
-            for (int64_t z = dimensions.z - halo_size.z - 1; z > static_cast<int64_t>(halo_size.z) - 1; z--) {
-                // For now all cells are fluid
-                double ax = Aplusx(x, y, z) * prec(x, y, z) * aux(x + 1, y, z);
-                double ay = Aplusy(x, y, z) * prec(x, y, z) * aux(x, y + 1, z);
-                double az = Aplusz(x, y, z) * prec(x, y, z) * aux(x, y, z + 1);
-
-                aux(x, y, z) = (intermediate(x, y, z) - ax - ay - az) * prec(x, y, z);
+                aux(x, y, z) = Mdiag(x, y, z) * residual(x, y, z) + Mplusx(x - 1, y, z) * residual(x - 1, y, z) +
+                               Mplusx(x, y, z) * residual(x + 1, y, z) + Mplusy(x, y - 1, z) * residual(x, y - 1, z) +
+                               Mplusy(x, y, z) * residual(x, y + 1, z) + Mplusz(x, y, z - 1) * residual(x, y, z - 1) +
+                               Mplusz(x, y, z) * residual(x, y, z + 1);
             }
         }
     }

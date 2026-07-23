@@ -599,8 +599,9 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     DebugRandomizeBorderVelocities();
     SetInitialTemperature();
 
-    // TODO: look into coefficients and preconditioner sync
-    SyncGridValues(&SimulationDomain::preconditioner_);
+    // TODO: sync coefficients and sync preconditioner
+    // SyncGridValues(&SimulationDomain::coefficients_);
+    // SyncGridValues(&SimulationDomain::preconditioner_);
 
     if (drawGrid) {
         DrawGrid(renderer, true);

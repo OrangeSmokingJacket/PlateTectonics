@@ -29,7 +29,6 @@ namespace SimulationConstants {
 // Not all operations read diagonal values, so they could be skipped
 enum class SyncScope : uint8_t { Orthogonal, Full };
 
-// Solver is based upon FLUID SIMULATION SIGGRAPH 2007 Course Notes
 class EulerFluidSim {
     friend SimulationDomain;
 
