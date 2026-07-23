@@ -5,7 +5,6 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fconcepts-diagnostics-depth=10>)
 option(ENABLE_ASAN "use address sanitizer" OFF)
 
 if (ENABLE_ASAN)
@@ -98,5 +97,7 @@ else()
     target_compile_options(${PROJECT_NAME} PRIVATE
         -Wall
         -Wextra
+
+        -fconcepts-diagnostics-depth=10
     )
 endif()
