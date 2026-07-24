@@ -1,8 +1,10 @@
 #include "euler_fluid_sim.hpp"
+#include "simulation_kernel.hpp"
 
 #include <Core/Renderer/renderer.hpp>
 #include <Math/scalar_ops.hpp>
 #include <Utils/compiler_utils.hpp>
+#include <cuda_runtime.h>
 
 #include <algorithm>
 #include <future>
@@ -589,6 +591,12 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     : thread_pool_(thread_pool)
     , domains_(std::make_unique<std::array<SimulationDomain, Cardinality(domains)>>(
           InitializeDomainArray(std::make_index_sequence<Cardinality(domains)>()))) {
+    for (auto& ptr : cuda_buffers_.grid_buffers) {
+        cudaMalloc(&ptr, SimulationDomain::GridValues::memory_footprint);
+    }
+    cudaMalloc(&cuda_buffers_.coefficients_buffer, SimulationDomain::GridCoefficientsValues::memory_footprint);
+    cublasCreate(&cuda_buffers_.handle);
+
     for (auto& texture : render_textures_) {
         texture = Core::Engine::Assets::AssetManager::Get()->RegisterAsset(
             std::make_unique<Core::Engine::Assets::Texture3Df>(full_dimensions.x,
@@ -606,6 +614,14 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     if (drawGrid) {
         DrawGrid(renderer, true);
     }
+}
+
+EulerFluidSim::~EulerFluidSim() {
+    for (auto& ptr : cuda_buffers_.grid_buffers) {
+        cudaFree(ptr);
+    }
+    cudaFree(cuda_buffers_.coefficients_buffer);
+    cublasDestroy(cuda_buffers_.handle);
 }
 
 void EulerFluidSim::Update(float delta_time) {
@@ -887,24 +903,25 @@ void EulerFluidSim::PCG() {
         fabs(minDivergence) < std::numeric_limits<double>::epsilon())
         return;
 
-    {
-        std::latch sync_latch{Cardinality(domains)};
-
-        for (size_t i = 0; i < Cardinality(domains); ++i) {
-            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-            thread_pool_->Enqueue([domain_ref, &sync_latch]() {
-                auto& domain = domain_ref.get();
-                domain.residual_->CopyFrom(*domain.cell_pressure_divergence_);
-                domain.ApplyPreconditioner();
-                sync_latch.count_down();
-            });
-        }
-
-        sync_latch.wait();
+    for (size_t i = 0; i < Cardinality(domains); ++i) {
+        (*domains_)[i].residual_->CopyFrom(*(*domains_)[i].cell_pressure_divergence_);
     }
 
+    ApplyCoefficientsMatrix(&cuda_buffers_,
+                            domains_->data(),
+                            &SimulationDomain::preconditioner_,
+                            &SimulationDomain::residual_);
+
     SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
-    double sigma = 0;
+
+    //for (size_t i = 0; i < Cardinality(domains); ++i) {
+    //    (*domains_)[i].search_->CopyFrom(*(*domains_)[i].auxiliary_);
+    //}
+    //double sigma = RealCellsDotProduct(&cuda_buffers_,
+    //                                   domains_->data(),
+    //                                   &SimulationDomain::auxiliary_,
+    //                                   &SimulationDomain::residual_);
+    double sigma = 0.0;
     {
         std::latch sync_latch{Cardinality(domains)};
         std::atomic<double> dot_prod{0.0};
@@ -928,23 +945,20 @@ void EulerFluidSim::PCG() {
          last_PCG_iteration_count++) {
         assert(!std::isinf(sigma));
         assert(!std::isnan(sigma));
-        {
-            std::latch sync_latch{Cardinality(domains)};
 
-            for (size_t i = 0; i < Cardinality(domains); ++i) {
-                std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-                thread_pool_->Enqueue([domain_ref, &sync_latch]() {
-                    auto& domain = domain_ref.get();
-                    domain.ApplyCoefficients();
-                    sync_latch.count_down();
-                });
-            }
+        ApplyCoefficientsMatrix(&cuda_buffers_,
+                                domains_->data(),
+                                &SimulationDomain::coefficients_,
+                                &SimulationDomain::search_);
 
-            sync_latch.wait();
-        }
-
+        // TODO: could be synced while waiting for dot_product calculation
         SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
-        double dot_product = 0;
+
+        //double dot_product = RealCellsDotProduct(&cuda_buffers_,
+        //                                         domains_->data(),
+        //                                         &SimulationDomain::auxiliary_,
+        //                                         &SimulationDomain::search_);
+        double dot_product = 0.0;
         {
             std::latch sync_latch{Cardinality(domains)};
             std::atomic<double> dot_prod{0.0};
@@ -962,7 +976,6 @@ void EulerFluidSim::PCG() {
             sync_latch.wait();
             dot_product = dot_prod.load();
         }
-
         double alpha = sigma / dot_product;
 
         {
@@ -987,23 +1000,19 @@ void EulerFluidSim::PCG() {
                 break;
         }
 
-        {
-            std::latch sync_latch{Cardinality(domains)};
+        ApplyCoefficientsMatrix(&cuda_buffers_,
+                                domains_->data(),
+                                &SimulationDomain::preconditioner_,
+                                &SimulationDomain::residual_);
 
-            for (size_t i = 0; i < Cardinality(domains); ++i) {
-                std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-                thread_pool_->Enqueue([domain_ref, &sync_latch]() {
-                    auto& domain = domain_ref.get();
-                    domain.ApplyPreconditioner();
-                    sync_latch.count_down();
-                });
-            }
-
-            sync_latch.wait();
-        }
+        // TODO: could be synced while waiting for sigma_new calculation
         SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
 
-        double sigma_new = 0;
+        //double sigma_new = RealCellsDotProduct(&cuda_buffers_,
+        //                                       domains_->data(),
+        //                                       &SimulationDomain::auxiliary_,
+        //                                       &SimulationDomain::residual_);
+        double sigma_new = 0.0;
         {
             std::latch sync_latch{Cardinality(domains)};
             std::atomic<double> dot_prod{0.0};

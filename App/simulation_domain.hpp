@@ -8,6 +8,7 @@ struct Array3D : public std::array<std::array<std::array<T, Z>, Y>, X> {
     static constexpr size_t size_Y = Y;
     static constexpr size_t size_Z = Z;
     static constexpr size_t cardinality = X * Y * Z;
+    static constexpr size_t memory_footprint = cardinality * sizeof(T);
     using value_type = T;
     using flat_iterator = T*;
     using flat_const_iterator = const T*;
@@ -54,11 +55,19 @@ struct MinMax {
 
 class EulerFluidSim;
 
-// TODO: unique_ptr dereference const is quite noticeable now
+// TODO: unique_ptr dereference cost is quite noticeable now
 struct SimulationDomain {
     // TODO: dimensions up to 64 or higher to minimize halo cells memory usage
     // [] is used because of constexpr and that array is initialized by the constructor
-    static constexpr Dimensions real_dimensions{4, 4, 4};
+    static constexpr Dimensions real_dimensions{8, 8, 8};
+
+    static_assert(real_dimensions[0] % 8 == 0 &&
+                  "Real Domain Dimensions should be multiples of 8 for easy GPU dispatch");
+    static_assert(real_dimensions[1] % 8 == 0 &&
+                  "Real Domain Dimensions should be multiples of 8 for easy GPU dispatch");
+    static_assert(real_dimensions[2] % 8 == 0 &&
+                  "Real Domain Dimensions should be multiples of 8 for easy GPU dispatch");
+
     static constexpr Dimensions halo_size{1, 1, 1};
     static constexpr Dimensions dimensions = real_dimensions + 2ull * halo_size;
     static constexpr Dimensions velocitiesXDimensions{dimensions[0] + 1, dimensions[1], dimensions[2]};

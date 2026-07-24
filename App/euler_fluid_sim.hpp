@@ -7,6 +7,7 @@
 #include <Core/Engine/Assets/Texture/texture.hpp>
 #include <Math/math_def.hpp>
 #include <Utils/thread_pool.hpp>
+#include <cublas_v2.h>
 
 #include <cmath>
 #include <memory>
@@ -36,7 +37,7 @@ public:
     // Dimensions
     // In vec4 for values are stored xyzw
     // Domains organized in storage wxyz
-    static constexpr Index4D domains{2, 2, 2, 6};
+    static constexpr Index4D domains{1, 1, 1, 6};
     static constexpr Dimensions real_face_dimensions =
         SimulationDomain::real_dimensions * static_cast<Index3D>(domains);
     static constexpr Dimensions full_dimensions = real_face_dimensions + 2ull * SimulationDomain::halo_size;
@@ -49,6 +50,7 @@ public:
 
     // Temp render ptr to draw grid
     explicit EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThreadPool* thread_pool);
+    ~EulerFluidSim();
     void Update(float delta_time);
     void RenderDebug(Core::RenderPipeline* renderer) const;
     void SetupRenderTexture();
@@ -110,7 +112,14 @@ public:
     Core::Engine::Assets::Color min_divergence_color = Core::Engine::Assets::Colors::Magenta;
     Core::Engine::Assets::Color max_divergence_color = Core::Engine::Assets::Colors::Cyan;
 
+    struct CudaDispatchBuffers {
+        std::array<double*, 2> grid_buffers;
+        CoefficientsValues<double>* coefficients_buffer;
+        cublasHandle_t handle;
+    };
+
 private:
+    CudaDispatchBuffers cuda_buffers_;
     utils::DefaultThreadPool* thread_pool_;
     // Calculation related data
     // per cell values are allocated on the heap
