@@ -88,7 +88,7 @@ void ApplyCoefficientsMatrix(
         SimulationDomain::real_dimensions[1] / block_dimensions.y,
         SimulationDomain::real_dimensions[2] / block_dimensions.z};
 
-    for (size_t i = 0; i < Cardinality(EulerFluidSim::domains); ++i) {
+    for (size_t i = 0; i < EulerFluidSim::domains; ++i) {
         cudaMemcpy(d_buffers->grid_buffers[1], (domains[i].*source)->flat_data(), elements * sizeof(ValueType), cudaMemcpyHostToDevice);
         cudaMemcpy(d_buffers->coefficients_buffer, (domains[i].*coefficients_matrix)->flat_data(), elements * sizeof(CoefficientsValues<ValueType>), cudaMemcpyHostToDevice);
 
@@ -110,7 +110,7 @@ SimulationDomain::GridValues::value_type RealCellsDotProduct(
     static constexpr size_t blocks = elements / threads + (elements % threads != 0);
     ValueType result{};
 
-    for (size_t i = 0; i < Cardinality(EulerFluidSim::domains); ++i) {
+    for (size_t i = 0; i < EulerFluidSim::domains; ++i) {
         ValueType partial_result{};
         cudaMemcpy(d_buffers->grid_buffers[0], (domains[i].*lhs)->flat_data(), elements * sizeof(ValueType), cudaMemcpyHostToDevice);
         cudaMemcpy(d_buffers->grid_buffers[1], real_grid_stencil.flat_data(), elements * sizeof(ValueType), cudaMemcpyHostToDevice);

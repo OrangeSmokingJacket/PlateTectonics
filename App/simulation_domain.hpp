@@ -68,6 +68,7 @@ struct SimulationDomain {
     static_assert(real_dimensions[2] % 8 == 0 &&
                   "Real Domain Dimensions should be multiples of 8 for easy GPU dispatch");
 
+    // Technically Z halo should be 0, because there's no Z neighbours, but it is useful to keep around
     static constexpr Dimensions halo_size{1, 1, 1};
     static constexpr Dimensions dimensions = real_dimensions + 2ull * halo_size;
     static constexpr Dimensions velocitiesXDimensions{dimensions[0] + 1, dimensions[1], dimensions[2]};
@@ -80,7 +81,7 @@ struct SimulationDomain {
     using GridYValues = Array3D<double, velocitiesYDimensions[0], velocitiesYDimensions[1], velocitiesYDimensions[2]>;
     using GridZValues = Array3D<double, velocitiesZDimensions[0], velocitiesZDimensions[1], velocitiesZDimensions[2]>;
 
-    explicit SimulationDomain(Index4D domain_index);
+    explicit SimulationDomain(size_t face_index);
     void CalculateCoefficients();
     void CalculatePreconditioner();
     void CalculateDivergence();
@@ -113,8 +114,7 @@ struct SimulationDomain {
     std::unique_ptr<GridValues> auxiliary_;
     std::unique_ptr<GridValues> search_;
 
-    // TODO: make it vec4 for cube-sphere
-    Index4D domain_index_;
+    size_t face_index_;
 };
 
 static const math::vec3<float> ValueGridOffset{0.5, 0.5, 0.5};

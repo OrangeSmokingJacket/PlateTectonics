@@ -1,7 +1,7 @@
 #include "simulation_domain.hpp"
 #include "euler_fluid_sim.hpp"
 
-SimulationDomain::SimulationDomain(Index4D domain_index)
+SimulationDomain::SimulationDomain(size_t face_index)
     : cell_pressure_(std::make_unique<GridValues>())
     , cell_temperature_(std::make_unique<GridValues>())
     , cell_temperature_temp_(std::make_unique<GridValues>())
@@ -17,7 +17,7 @@ SimulationDomain::SimulationDomain(Index4D domain_index)
     , residual_(std::make_unique<GridValues>())
     , auxiliary_(std::make_unique<GridValues>())
     , search_(std::make_unique<GridValues>())
-    , domain_index_(domain_index) {
+    , face_index_(face_index) {
     cell_pressure_->SetToZero();
     coefficients_->SetToZero();
     preconditioner_->SetToZero();
@@ -61,7 +61,7 @@ void SimulationDomain::CalculateCoefficients() {
     for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
             for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
-                if (EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z))) {
+                if (EulerFluidSim::IsSolidCell(z)) {
                     continue;
                 }
 
@@ -69,8 +69,8 @@ void SimulationDomain::CalculateCoefficients() {
                 static constexpr int flowNegX = 1;
                 static constexpr int flowPosY = 1;
                 static constexpr int flowNegY = 1;
-                int flowPosZ = !EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z + 1));
-                int flowNegZ = !EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z - 1));
+                int flowPosZ = !EulerFluidSim::IsSolidCell(z + 1);
+                int flowNegZ = !EulerFluidSim::IsSolidCell(z - 1);
 
                 int flowSum = flowPosX + flowNegX + flowPosY + flowNegY + flowPosZ + flowNegZ;
 
@@ -93,7 +93,7 @@ void SimulationDomain::CalculatePreconditioner() {
     for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
             for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
-                if (EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z))) {
+                if (EulerFluidSim::IsSolidCell(z)) {
                     continue;
                 }
 
@@ -120,8 +120,8 @@ void SimulationDomain::CalculateDivergence() {
                 static constexpr int flowNegX = 1;
                 static constexpr int flowPosY = 1;
                 static constexpr int flowNegY = 1;
-                int flowPosZ = !EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z + 1));
-                int flowNegZ = !EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z - 1));
+                int flowPosZ = !EulerFluidSim::IsSolidCell(z + 1);
+                int flowNegZ = !EulerFluidSim::IsSolidCell(z - 1);
 
                 double velocityX_POS = (*velocities_x_)[x + 1][y][z] * flowPosX;
                 double velocityX_NEG = (*velocities_x_)[x][y][z] * flowNegX;
@@ -173,7 +173,7 @@ void SimulationDomain::UpdateVelocities() {
     for (uint64_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
         for (uint64_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
             for (uint64_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
-                if (EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z))) {
+                if (EulerFluidSim::IsSolidCell(z)) {
                     (*velocities_x_)[x][y][z] = 0;
                     (*velocities_x_)[x + 1][y][z] = 0;
                     (*velocities_y_)[x][y][z] = 0;
@@ -184,7 +184,7 @@ void SimulationDomain::UpdateVelocities() {
                 }
                 (*velocities_x_)[x + 1][y][z] -= k * ((*cell_pressure_)[x + 1][y][z] - (*cell_pressure_)[x][y][z]);
                 (*velocities_y_)[x][y + 1][z] -= k * ((*cell_pressure_)[x][y + 1][z] - (*cell_pressure_)[x][y][z]);
-                if (!EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z + 1))) {
+                if (!EulerFluidSim::IsSolidCell(z + 1)) {
                     (*velocities_z_)[x][y][z + 1] -= k * ((*cell_pressure_)[x][y][z + 1] - (*cell_pressure_)[x][y][z]);
                 }
             }
@@ -228,7 +228,7 @@ void SimulationDomain::AdvectVelocities() {
         for (size_t y = halo_size.y; y < velocities_x_->size_Y - halo_size.y; ++y) {
             for (size_t z = halo_size.z; z < velocities_x_->size_Z - halo_size.z; ++z) {
                 // solid cells have solid neighbours in x/y directions
-                if (EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z)))
+                if (EulerFluidSim::IsSolidCell(z))
                     continue;
 
                 nPos = math::vec3<float>{static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)} +
@@ -253,7 +253,7 @@ void SimulationDomain::AdvectVelocities() {
         for (size_t y = halo_size.y; y < velocities_y_->size_Y - halo_size.y; ++y) {
             for (size_t z = halo_size.z; z < velocities_y_->size_Z - halo_size.z; ++z) {
                 // solid cells have solid neighbours in x/y directions
-                if (EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z)))
+                if (EulerFluidSim::IsSolidCell(z))
                     continue;
 
                 nPos = math::vec3<float>{static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)} +
@@ -271,8 +271,7 @@ void SimulationDomain::AdvectVelocities() {
     for (size_t x = halo_size.x; x < velocities_z_->size_X - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < velocities_z_->size_Y - halo_size.y; ++y) {
             for (size_t z = halo_size.z; z < velocities_z_->size_Z - halo_size.z; ++z) {
-                if (EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z - 1)) ||
-                    EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z)))
+                if (EulerFluidSim::IsSolidCell(z - 1) || EulerFluidSim::IsSolidCell(z))
                     continue;
 
                 nPos = math::vec3<float>{static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)} +
