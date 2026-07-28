@@ -30,6 +30,22 @@ namespace SimulationConstants {
 // Not all operations read diagonal values, so they could be skipped
 enum class SyncScope : uint8_t { Orthogonal, Full };
 
+// assume that there is no padding needed between them
+template <typename T, size_t Elements, size_t Segments>
+struct SegmentedBuffer {
+    using value_t = T;
+    static constexpr size_t elements = Elements;
+    static constexpr size_t segments = Segments;
+    static constexpr size_t allocation_size = sizeof(T) * elements * segments;
+
+    T* ptr;
+
+    T* GetSegment(size_t index) const {
+        assert(index < segments);
+        return ptr + elements * index;
+    }
+};
+
 class EulerFluidSim {
     friend SimulationDomain;
 
@@ -108,13 +124,24 @@ public:
     Core::Engine::Assets::Color max_divergence_color = Core::Engine::Assets::Colors::Cyan;
 
     struct CudaDispatchBuffers {
-        std::array<double*, 2> grid_buffers;
-        CoefficientsValues<double>* coefficients_buffer;
+        template <typename T>
+        using SB = SegmentedBuffer<T, Cardinality(SimulationDomain::dimensions), EulerFluidSim::domains>;
+
+        SB<double> auxiliary;
+        SB<double> residual;
+        SB<double> search;
+        SB<CoefficientsValues<double>> coefficients;
+        SB<CoefficientsValues<double>> preconditioner;
         cublasHandle_t handle;
     };
 
 private:
     CudaDispatchBuffers cuda_buffers_;
+    struct CudaGraphs {
+        cudaStream_t stream;
+        cudaGraphExec_t apply_A;
+        cudaGraphExec_t apply_M;
+    } cuda_graphs_;
     utils::DefaultThreadPool* thread_pool_;
     // Calculation related data
     // per cell values are allocated on the heap

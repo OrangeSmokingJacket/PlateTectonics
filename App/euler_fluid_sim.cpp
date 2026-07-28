@@ -378,11 +378,25 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     : thread_pool_(thread_pool)
     , domains_(std::make_unique<std::array<SimulationDomain, domains>>(
           InitializeDomainArray(std::make_index_sequence<domains>()))) {
-    for (auto& ptr : cuda_buffers_.grid_buffers) {
-        cudaMalloc(&ptr, SimulationDomain::GridValues::memory_footprint);
-    }
-    cudaMalloc(&cuda_buffers_.coefficients_buffer, SimulationDomain::GridCoefficientsValues::memory_footprint);
+    cudaMalloc(&cuda_buffers_.auxiliary.ptr, cuda_buffers_.auxiliary.allocation_size);
+    cudaMalloc(&cuda_buffers_.residual.ptr, cuda_buffers_.residual.allocation_size);
+    cudaMalloc(&cuda_buffers_.search.ptr, cuda_buffers_.search.allocation_size);
+    cudaMalloc(&cuda_buffers_.coefficients.ptr, cuda_buffers_.coefficients.allocation_size);
+    cudaMalloc(&cuda_buffers_.preconditioner.ptr, cuda_buffers_.preconditioner.allocation_size);
+
     cublasCreate(&cuda_buffers_.handle);
+
+    {
+        auto graph = CreateApplyAGraph(&cuda_buffers_, domains_->data());
+        cudaGraphInstantiate(&cuda_graphs_.apply_A, graph, 0);
+        cudaGraphDestroy(graph);
+    }
+    {
+        auto graph = CreateApplyMGraph(&cuda_buffers_, domains_->data());
+        cudaGraphInstantiate(&cuda_graphs_.apply_M, graph, 0);
+        cudaGraphDestroy(graph);
+    }
+    cudaStreamCreate(&cuda_graphs_.stream);
 
     for (auto& texture : render_textures_) {
         texture = Core::Engine::Assets::AssetManager::Get()->RegisterAsset(
@@ -404,10 +418,16 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
 }
 
 EulerFluidSim::~EulerFluidSim() {
-    for (auto& ptr : cuda_buffers_.grid_buffers) {
-        cudaFree(ptr);
-    }
-    cudaFree(cuda_buffers_.coefficients_buffer);
+    cudaGraphExecDestroy(cuda_graphs_.apply_A);
+    cudaGraphExecDestroy(cuda_graphs_.apply_M);
+    cudaStreamDestroy(cuda_graphs_.stream);
+
+    cudaFree(cuda_buffers_.auxiliary.ptr);
+    cudaFree(cuda_buffers_.residual.ptr);
+    cudaFree(cuda_buffers_.search.ptr);
+    cudaFree(cuda_buffers_.coefficients.ptr);
+    cudaFree(cuda_buffers_.preconditioner.ptr);
+
     cublasDestroy(cuda_buffers_.handle);
 }
 
@@ -680,10 +700,7 @@ void EulerFluidSim::PCG() {
         (*domains_)[i].residual_->CopyFrom(*(*domains_)[i].cell_pressure_divergence_);
     }
 
-    ApplyCoefficientsMatrix(&cuda_buffers_,
-                            domains_->data(),
-                            &SimulationDomain::preconditioner_,
-                            &SimulationDomain::residual_);
+    cudaGraphLaunch(cuda_graphs_.apply_M, cuda_graphs_.stream);
 
     SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
 
@@ -719,10 +736,7 @@ void EulerFluidSim::PCG() {
         assert(!std::isinf(sigma));
         assert(!std::isnan(sigma));
 
-        ApplyCoefficientsMatrix(&cuda_buffers_,
-                                domains_->data(),
-                                &SimulationDomain::coefficients_,
-                                &SimulationDomain::search_);
+        cudaGraphLaunch(cuda_graphs_.apply_A, cuda_graphs_.stream);
 
         // TODO: could be synced while waiting for dot_product calculation
         SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
@@ -773,10 +787,7 @@ void EulerFluidSim::PCG() {
                 break;
         }
 
-        ApplyCoefficientsMatrix(&cuda_buffers_,
-                                domains_->data(),
-                                &SimulationDomain::preconditioner_,
-                                &SimulationDomain::residual_);
+        cudaGraphLaunch(cuda_graphs_.apply_M, cuda_graphs_.stream);
 
         // TODO: could be synced while waiting for sigma_new calculation
         SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);

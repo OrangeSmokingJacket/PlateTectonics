@@ -2,14 +2,6 @@
 
 #include "euler_fluid_sim.hpp"
 
-void ApplyCoefficientsMatrix(
-    EulerFluidSim::CudaDispatchBuffers* d_buffers,
-    SimulationDomain* domains,
-    const std::unique_ptr<SimulationDomain::GridCoefficientsValues> SimulationDomain::* coefficients_matrix,
-    const std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* source);
+cudaGraph_t CreateApplyAGraph(EulerFluidSim::CudaDispatchBuffers* d_buffers, SimulationDomain* domains);
 
-SimulationDomain::GridValues::value_type
-RealCellsDotProduct(EulerFluidSim::CudaDispatchBuffers* d_buffers,
-                    SimulationDomain* domains,
-                    const std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* lhs,
-                    const std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* rhs);
+cudaGraph_t CreateApplyMGraph(EulerFluidSim::CudaDispatchBuffers* d_buffers, SimulationDomain* domains);

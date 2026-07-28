@@ -68,3 +68,9 @@ SpacesInParentheses: false
 SpacesInSquareBrackets: false
 TabWidth: 4
 UseTab: Never
+
+WhitespaceSensitiveMacros:
+  - __global__
+  - __device__
+  - __host__
+  - __shared__
