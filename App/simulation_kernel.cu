@@ -2,12 +2,6 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
-// TODO: combine multiple domains into a single buffer for small simulations
-// Arbitrary cut off here is 16MB (2^24 B) (~2 million elements, depending on the size)
-
-// W is always 6, and it is a small enough constant to combine domains together.
-// This will result in x6 buffers size, but x6 fewer dispatches
-
 constexpr dim3 domain_dimensions{static_cast<uint32_t>(SimulationDomain::dimensions[0]),
                                  static_cast<uint32_t>(SimulationDomain::dimensions[1]),
                                  static_cast<uint32_t>(SimulationDomain::dimensions[2])};
@@ -76,14 +70,12 @@ static constexpr SimulationDomain::GridValues real_grid_stencil = [](){
 
 void CreateApplySparseMatrixGraph(
     cudaGraph_t* graph,
-    EulerFluidSim::CudaDispatchBuffers* d_buffers,
+    CudaDispatchBuffers* d_buffers,
     SimulationDomain* domains,
     size_t domain_index,
-    const std::unique_ptr<SimulationDomain::GridCoefficientsValues> SimulationDomain::* h_coefficients_matrix,
-    const EulerFluidSim::CudaDispatchBuffers::SB<CoefficientsValues<double>> EulerFluidSim::CudaDispatchBuffers::*
-        d_coefficients_matrix,
+    const CudaDispatchBuffers::SB<CoefficientsValues<double>> CudaDispatchBuffers::* d_coefficients_matrix,
     const std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* h_source,
-    const EulerFluidSim::CudaDispatchBuffers::SB<double> EulerFluidSim::CudaDispatchBuffers::* d_source) {
+    const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* d_source) {
     using ValueType = SimulationDomain::GridValues::value_type;
     static constexpr size_t elements = SimulationDomain::GridValues::cardinality;
     static constexpr dim3 block_dimensions{8, 8, 8};
@@ -91,17 +83,11 @@ void CreateApplySparseMatrixGraph(
                                           SimulationDomain::real_dimensions[1] / block_dimensions.y,
                                           SimulationDomain::real_dimensions[2] / block_dimensions.z};
     static constexpr size_t vec_size = elements * sizeof(ValueType);
-    static constexpr size_t mat_size = elements * sizeof(CoefficientsValues<ValueType>);
 
     cudaStream_t capture_stream;
     cudaStreamCreate(&capture_stream);
     cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
 
-    cudaMemcpyAsync((d_buffers->*d_coefficients_matrix).GetSegment(domain_index),
-                    (domains[domain_index].*h_coefficients_matrix)->flat_data(),
-                    mat_size,
-                    cudaMemcpyHostToDevice,
-                    capture_stream);
     cudaMemcpyAsync((d_buffers->*d_source).GetSegment(domain_index),
                     (domains[domain_index].*h_source)->flat_data(),
                     vec_size,
@@ -123,38 +109,32 @@ void CreateApplySparseMatrixGraph(
     cudaStreamDestroy(capture_stream);
 }
 
-void CreateApplyAGraph(cudaGraph_t* graph,
-                       EulerFluidSim::CudaDispatchBuffers* d_buffers,
-                       SimulationDomain* domains,
-                       size_t domain_index) {
+void
+CreateApplyAGraph(cudaGraph_t* graph, CudaDispatchBuffers* d_buffers, SimulationDomain* domains, size_t domain_index) {
     CreateApplySparseMatrixGraph(graph,
                                  d_buffers,
                                  domains,
                                  domain_index,
-                                 &SimulationDomain::coefficients_,
-                                 &EulerFluidSim::CudaDispatchBuffers::coefficients,
+                                 &CudaDispatchBuffers::coefficients,
                                  &SimulationDomain::search_,
-                                 &EulerFluidSim::CudaDispatchBuffers::search);
+                                 &CudaDispatchBuffers::search);
 }
 
-void CreateApplyMGraph(cudaGraph_t* graph,
-                       EulerFluidSim::CudaDispatchBuffers* d_buffers,
-                       SimulationDomain* domains,
-                       size_t domain_index) {
+void
+CreateApplyMGraph(cudaGraph_t* graph, CudaDispatchBuffers* d_buffers, SimulationDomain* domains, size_t domain_index) {
     CreateApplySparseMatrixGraph(graph,
                                  d_buffers,
                                  domains,
                                  domain_index,
-                                 &SimulationDomain::preconditioner_,
-                                 &EulerFluidSim::CudaDispatchBuffers::preconditioner,
+                                 &CudaDispatchBuffers::preconditioner,
                                  &SimulationDomain::residual_,
-                                 &EulerFluidSim::CudaDispatchBuffers::residual);
+                                 &CudaDispatchBuffers::residual);
 }
 
-cudaGraph_t CreateApplyMatrixGraph(EulerFluidSim::CudaDispatchBuffers* d_buffers,
+cudaGraph_t CreateApplyMatrixGraph(CudaDispatchBuffers* d_buffers,
                                    SimulationDomain* domains,
                                    void (*create_func)(cudaGraph_t* graph,
-                                                       EulerFluidSim::CudaDispatchBuffers* d_buffers,
+                                                       CudaDispatchBuffers* d_buffers,
                                                        SimulationDomain* domains,
                                                        size_t domain_index)) {
     cudaGraph_t graph;
@@ -172,18 +152,18 @@ cudaGraph_t CreateApplyMatrixGraph(EulerFluidSim::CudaDispatchBuffers* d_buffers
     return graph;
 }
 
-cudaGraph_t CreateApplyAGraph(EulerFluidSim::CudaDispatchBuffers* d_buffers, SimulationDomain* domains) {
+cudaGraph_t CreateApplyAGraph(CudaDispatchBuffers* d_buffers, SimulationDomain* domains) {
     return CreateApplyMatrixGraph(d_buffers, domains, CreateApplyAGraph);
 }
 
-cudaGraph_t CreateApplyMGraph(EulerFluidSim::CudaDispatchBuffers* d_buffers, SimulationDomain* domains) {
+cudaGraph_t CreateApplyMGraph(CudaDispatchBuffers* d_buffers, SimulationDomain* domains) {
     return CreateApplyMatrixGraph(d_buffers, domains, CreateApplyMGraph);
 }
 
 /*
 // It is easier to use a sencil for halo cells, then try to stride over them in dot product kernel
 SimulationDomain::GridValues::value_type RealCellsDotProduct(
-    EulerFluidSim::CudaDispatchBuffers* d_buffers,
+    CudaDispatchBuffers* d_buffers,
     SimulationDomain* domains,
     const std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* lhs,
     const std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* rhs) {

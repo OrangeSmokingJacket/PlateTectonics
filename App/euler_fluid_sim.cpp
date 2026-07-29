@@ -398,6 +398,19 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     }
     cudaStreamCreate(&cuda_graphs_.stream);
 
+    for (size_t i = 0; i < domains; ++i) {
+        cudaMemcpyAsync(cuda_buffers_.coefficients.GetSegment(i),
+                        (*domains_)[i].coefficients_->flat_data(),
+                        SimulationDomain::GridCoefficientsValues::memory_footprint,
+                        cudaMemcpyHostToDevice,
+                        cuda_graphs_.stream);
+        cudaMemcpyAsync(cuda_buffers_.preconditioner.GetSegment(i),
+                        (*domains_)[i].preconditioner_->flat_data(),
+                        SimulationDomain::GridCoefficientsValues::memory_footprint,
+                        cudaMemcpyHostToDevice,
+                        cuda_graphs_.stream);
+    }
+
     for (auto& texture : render_textures_) {
         texture = Core::Engine::Assets::AssetManager::Get()->RegisterAsset(
             std::make_unique<Core::Engine::Assets::Texture3Df>(SimulationDomain::dimensions.x,

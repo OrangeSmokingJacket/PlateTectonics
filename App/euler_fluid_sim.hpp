@@ -25,6 +25,7 @@ namespace SimulationConstants {
     static constexpr double solver_tolerance = 1.0e-6;
     static constexpr uint32_t max_solver_iterations = 100;
     static constexpr InterpolationType interpolation_type = InterpolationType::Trilinear;
+    static constexpr size_t domains = 6;
 } // namespace SimulationConstants
 
 // Not all operations read diagonal values, so they could be skipped
@@ -46,12 +47,29 @@ struct SegmentedBuffer {
     }
 };
 
+struct CudaDispatchBuffers {
+    template <typename T>
+    using SB = SegmentedBuffer<T, Cardinality(SimulationDomain::dimensions), SimulationConstants::domains>;
+
+    SB<double> auxiliary;
+    SB<double> residual;
+    SB<double> search;
+    SB<CoefficientsValues<double>> coefficients;
+    SB<CoefficientsValues<double>> preconditioner;
+    cublasHandle_t handle;
+};
+struct CudaGraphs {
+    cudaStream_t stream;
+    cudaGraphExec_t apply_A;
+    cudaGraphExec_t apply_M;
+};
+
 class EulerFluidSim {
     friend SimulationDomain;
 
 public:
     // 1 domain per face
-    static constexpr size_t domains = 6;
+    static constexpr size_t domains = SimulationConstants::domains;
     static constexpr math::vec3<float> world_origin_offset{
         -(SimulationDomain::real_dimensions[0] * SimulationConstants::scale * 0.5f),
         -(SimulationDomain::real_dimensions[1] * SimulationConstants::scale * 0.5f),
@@ -123,25 +141,9 @@ public:
     Core::Engine::Assets::Color min_divergence_color = Core::Engine::Assets::Colors::Magenta;
     Core::Engine::Assets::Color max_divergence_color = Core::Engine::Assets::Colors::Cyan;
 
-    struct CudaDispatchBuffers {
-        template <typename T>
-        using SB = SegmentedBuffer<T, Cardinality(SimulationDomain::dimensions), EulerFluidSim::domains>;
-
-        SB<double> auxiliary;
-        SB<double> residual;
-        SB<double> search;
-        SB<CoefficientsValues<double>> coefficients;
-        SB<CoefficientsValues<double>> preconditioner;
-        cublasHandle_t handle;
-    };
-
 private:
     CudaDispatchBuffers cuda_buffers_;
-    struct CudaGraphs {
-        cudaStream_t stream;
-        cudaGraphExec_t apply_A;
-        cudaGraphExec_t apply_M;
-    } cuda_graphs_;
+    CudaGraphs cuda_graphs_;
     utils::DefaultThreadPool* thread_pool_;
     // Calculation related data
     // per cell values are allocated on the heap
