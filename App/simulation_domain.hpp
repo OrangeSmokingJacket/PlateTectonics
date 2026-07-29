@@ -68,8 +68,8 @@ struct SimulationDomain {
     static_assert(real_dimensions[2] % 8 == 0 &&
                   "Real Domain Dimensions should be multiples of 8 for easy GPU dispatch");
 
-    // Technically Z halo should be 0, because there's no Z neighbours, but it is useful to keep around
-    static constexpr Dimensions halo_size{1, 1, 1};
+    static constexpr Dimensions halo_size{1, 1, 0};
+    static constexpr size_t border_size = 1;
     static constexpr Dimensions dimensions = real_dimensions + 2ull * halo_size;
     static constexpr Dimensions velocitiesXDimensions{dimensions[0] + 1, dimensions[1], dimensions[2]};
     static constexpr Dimensions velocitiesYDimensions{dimensions[0], dimensions[1] + 1, dimensions[2]};
@@ -85,8 +85,6 @@ struct SimulationDomain {
     void CalculateCoefficients();
     void CalculatePreconditioner();
     void CalculateDivergence();
-    void ApplyCoefficients();
-    void ApplyPreconditioner();
     void UpdateVelocities();
     void ApplyBuoyancy(const EulerFluidSim* simulation);
     void AdvectVelocities();

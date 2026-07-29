@@ -54,33 +54,15 @@ constexpr std::array<WNeighbour, 6> w_neighbours{WNeighbour{1, 4, 2, 5},
 
 // TODO: separate array for orthogonal directions
 static constexpr std::array directions{
-    math::vec3<int>{-1, -1, -1},
     math::vec3<int>{-1, -1, 0},
-    math::vec3<int>{-1, -1, 1},
-    math::vec3<int>{-1, 0, -1},
     math::vec3<int>{-1, 0, 0},
-    math::vec3<int>{-1, 0, 1},
-    math::vec3<int>{-1, 1, -1},
     math::vec3<int>{-1, 1, 0},
-    math::vec3<int>{-1, 1, 1},
-    math::vec3<int>{0, -1, -1},
     math::vec3<int>{0, -1, 0},
-    math::vec3<int>{0, -1, 1},
-    math::vec3<int>{0, 0, -1},
-    //math::vec3<int>{0, 0, 0}, skip itself
-    math::vec3<int>{0, 0, 1},
-    math::vec3<int>{0, 1, -1},
+    // math::vec3<int>{0, 0, 0}, skip itself
     math::vec3<int>{0, 1, 0},
-    math::vec3<int>{0, 1, 1},
-    math::vec3<int>{1, -1, -1},
     math::vec3<int>{1, -1, 0},
-    math::vec3<int>{1, -1, 1},
-    math::vec3<int>{1, 0, -1},
     math::vec3<int>{1, 0, 0},
-    math::vec3<int>{1, 0, 1},
-    math::vec3<int>{1, 1, -1},
     math::vec3<int>{1, 1, 0},
-    math::vec3<int>{1, 1, 1},
 };
 
 // Is not influenced by .w
@@ -220,11 +202,7 @@ void SyncGridValues(std::array<SimulationDomain, EulerFluidSim::domains>& domain
     for (size_t dw = 0; dw < EulerFluidSim::domains; ++dw) {
         for (const auto& dir : directions) {
             // Solver grids never read diagonal halos - skip all non-face work
-            if (scope == SyncScope::Orthogonal && (dir.x != 0) + (dir.y != 0) + (dir.z != 0) != 1) {
-                continue;
-            }
-            // Those are border domains, nothing to sync there
-            if (dir.z < static_cast<int>(0) || dir.z >= 1) {
+            if (scope == SyncScope::Orthogonal && (dir.x != 0) + (dir.y != 0) != 1) {
                 continue;
             }
             auto domain_index_to = dw;
@@ -296,10 +274,6 @@ void SyncGridVelocitiesXY(std::array<SimulationDomain, EulerFluidSim::domains>& 
 
     for (size_t dw = 0; dw < EulerFluidSim::domains; ++dw) {
         for (const auto& dir : directions) {
-            // Those are border domains, nothing to sync there
-            if (dir.z < static_cast<int>(0) || dir.z >= 1) {
-                continue;
-            }
             auto domain_index_to = dw;
 
             // x/y borders have to be synced with other faces
@@ -1014,7 +988,9 @@ void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, b
 
         for (size_t x = 0; x < SimulationDomain::real_dimensions.x * cell_sample_count; ++x) {
             for (size_t y = 0; y < SimulationDomain::real_dimensions.y * cell_sample_count; ++y) {
-                for (size_t z = 0; z < SimulationDomain::real_dimensions.z * cell_sample_count; ++z) {
+                for (size_t z = SimulationDomain::border_size;
+                     z < (SimulationDomain::real_dimensions.z - SimulationDomain::border_size) * cell_sample_count;
+                     ++z) {
                     math::vec3<float> nPos =
                         static_cast<math::vec3<float>>(SimulationDomain::halo_size) + sample_offset;
                     nPos += math::vec3<float>{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} *
