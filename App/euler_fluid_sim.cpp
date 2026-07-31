@@ -352,13 +352,47 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     : thread_pool_(thread_pool)
     , domains_(std::make_unique<std::array<SimulationDomain, domains>>(
           InitializeDomainArray(std::make_index_sequence<domains>()))) {
+    static constexpr size_t workspace_size = 1 << 22;
+    cudaMalloc(&cuda_buffers_.handle_workspace, workspace_size);
+    cudaMalloc(&cuda_buffers_.pressure.ptr, cuda_buffers_.pressure.allocation_size);
+    cudaMalloc(&cuda_buffers_.divergence.ptr, cuda_buffers_.divergence.allocation_size);
     cudaMalloc(&cuda_buffers_.auxiliary.ptr, cuda_buffers_.auxiliary.allocation_size);
     cudaMalloc(&cuda_buffers_.residual.ptr, cuda_buffers_.residual.allocation_size);
     cudaMalloc(&cuda_buffers_.search.ptr, cuda_buffers_.search.allocation_size);
     cudaMalloc(&cuda_buffers_.coefficients.ptr, cuda_buffers_.coefficients.allocation_size);
     cudaMalloc(&cuda_buffers_.preconditioner.ptr, cuda_buffers_.preconditioner.allocation_size);
 
+    for (auto& domain : *domains_) {
+        cudaHostRegister(domain.cell_pressure_->flat_begin(),
+                         SimulationDomain::GridValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        cudaHostRegister(domain.cell_pressure_divergence_->flat_begin(),
+                         SimulationDomain::GridValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        cudaHostRegister(domain.auxiliary_->flat_begin(),
+                         SimulationDomain::GridValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        cudaHostRegister(domain.residual_->flat_begin(),
+                         SimulationDomain::GridValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        cudaHostRegister(domain.search_->flat_begin(),
+                         SimulationDomain::GridValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        // TODO: there is no need now to store them in main memory, since they do not change at runtime (at least now)
+        cudaHostRegister(domain.coefficients_->flat_begin(),
+                         SimulationDomain::GridCoefficientsValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        cudaHostRegister(domain.preconditioner_->flat_begin(),
+                         SimulationDomain::GridCoefficientsValues::memory_footprint,
+                         cudaHostRegisterDefault);
+    }
+
+    cudaStreamCreateWithFlags(&cuda_graphs_.stream, cudaStreamNonBlocking);
+
     cublasCreate(&cuda_buffers_.handle);
+    cublasSetStream(cuda_buffers_.handle, cuda_graphs_.stream);
+    cublasSetWorkspace(cuda_buffers_.handle, cuda_buffers_.handle_workspace, workspace_size);
+    cublasSetPointerMode(cuda_buffers_.handle, CUBLAS_POINTER_MODE_DEVICE);
 
     {
         auto graph = CreateApplyAGraph(&cuda_buffers_, domains_->data());
@@ -370,7 +404,12 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
         cudaGraphInstantiate(&cuda_graphs_.apply_M, graph, 0);
         cudaGraphDestroy(graph);
     }
-    cudaStreamCreate(&cuda_graphs_.stream);
+    {
+        auto graph =
+            CreateMaxDivergenceGraph(&cuda_buffers_, domains_->data(), &cuda_buffers_.handle, cuda_graphs_.stream);
+        cudaGraphInstantiate(&cuda_graphs_.max_divergence, graph, 0);
+        cudaGraphDestroy(graph);
+    }
 
     for (size_t i = 0; i < domains; ++i) {
         cudaMemcpyAsync(cuda_buffers_.coefficients.GetSegment(i),
@@ -407,15 +446,30 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
 EulerFluidSim::~EulerFluidSim() {
     cudaGraphExecDestroy(cuda_graphs_.apply_A);
     cudaGraphExecDestroy(cuda_graphs_.apply_M);
-    cudaStreamDestroy(cuda_graphs_.stream);
+    cudaGraphExecDestroy(cuda_graphs_.max_divergence);
 
+    cublasDestroy(cuda_buffers_.handle);
+
+    for (auto& domain : *domains_) {
+        cudaHostUnregister(domain.cell_pressure_->flat_begin());
+        cudaHostUnregister(domain.cell_pressure_divergence_->flat_begin());
+        cudaHostUnregister(domain.auxiliary_->flat_begin());
+        cudaHostUnregister(domain.residual_->flat_begin());
+        cudaHostUnregister(domain.search_->flat_begin());
+        cudaHostUnregister(domain.coefficients_->flat_begin());
+        cudaHostUnregister(domain.preconditioner_->flat_begin());
+    }
+
+    cudaFree(cuda_buffers_.handle_workspace);
+    cudaFree(cuda_buffers_.pressure.ptr);
+    cudaFree(cuda_buffers_.divergence.ptr);
     cudaFree(cuda_buffers_.auxiliary.ptr);
     cudaFree(cuda_buffers_.residual.ptr);
     cudaFree(cuda_buffers_.search.ptr);
     cudaFree(cuda_buffers_.coefficients.ptr);
     cudaFree(cuda_buffers_.preconditioner.ptr);
 
-    cublasDestroy(cuda_buffers_.handle);
+    cudaStreamDestroy(cuda_graphs_.stream);
 }
 
 void EulerFluidSim::Update(float delta_time) {
@@ -649,38 +703,19 @@ void EulerFluidSim::SetInitialTemperature() {
 }
 
 void EulerFluidSim::PCG() {
+    last_PCG_iteration_count = 0;
+    for (auto& domain : *domains_) {
+        domain.cell_pressure_->SetToZero();
+    }
     // TODO: there is pressure divergence accumulation on domain borders, that has to be resolved
     // Having precondition and coefficients local to domain increases iterations by a factor of 2
     // If divergence is low enough zero pressure will be close enough
     // It might be faster in some cases to skip this check
-    double maxDivergence = std::numeric_limits<double>::lowest();
-    double minDivergence = std::numeric_limits<double>::max();
-    {
-        std::vector<std::future<MinMax>> min_max_results;
-        min_max_results.reserve(domains);
 
-        for (size_t i = 0; i < domains; ++i) {
-            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-            auto promise = std::make_shared<std::promise<MinMax>>();
-            min_max_results.push_back(promise->get_future());
-            thread_pool_->Enqueue([domain_ref, promise]() {
-                auto& domain = domain_ref.get();
-                // initial guess, past values may be also viable here
-                domain.cell_pressure_->SetToZero();
-                promise->set_value(domain.DivergenceMinMax());
-            });
-        }
+    cudaGraphLaunch(cuda_graphs_.max_divergence, cuda_graphs_.stream);
+    cudaStreamSynchronize(cuda_graphs_.stream);
 
-        for (auto& res : min_max_results) {
-            // TODO: order of results are undefined, and there could be a value ready, but main thread is waiting for a specific one
-            auto min_max = res.get();
-            minDivergence = std::min(minDivergence, min_max.min);
-            maxDivergence = std::max(maxDivergence, min_max.max);
-        }
-    }
-
-    if (fabs(maxDivergence) < std::numeric_limits<double>::epsilon() &&
-        fabs(minDivergence) < std::numeric_limits<double>::epsilon())
+    if (std::abs(GetMaxDivergence()) < std::numeric_limits<double>::epsilon())
         return;
 
     for (size_t i = 0; i < domains; ++i) {
@@ -688,6 +723,7 @@ void EulerFluidSim::PCG() {
     }
 
     cudaGraphLaunch(cuda_graphs_.apply_M, cuda_graphs_.stream);
+    cudaStreamSynchronize(cuda_graphs_.stream);
 
     SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
 
@@ -718,12 +754,12 @@ void EulerFluidSim::PCG() {
         sigma = dot_prod.load();
     }
 
-    for (last_PCG_iteration_count = 0; last_PCG_iteration_count < SimulationConstants::max_solver_iterations;
-         last_PCG_iteration_count++) {
+    for (; last_PCG_iteration_count < SimulationConstants::max_solver_iterations; last_PCG_iteration_count++) {
         assert(!std::isinf(sigma));
         assert(!std::isnan(sigma));
 
         cudaGraphLaunch(cuda_graphs_.apply_A, cuda_graphs_.stream);
+        cudaStreamSynchronize(cuda_graphs_.stream);
 
         // TODO: could be synced while waiting for dot_product calculation
         SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
@@ -775,6 +811,7 @@ void EulerFluidSim::PCG() {
         }
 
         cudaGraphLaunch(cuda_graphs_.apply_M, cuda_graphs_.stream);
+        cudaStreamSynchronize(cuda_graphs_.stream);
 
         // TODO: could be synced while waiting for sigma_new calculation
         SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);

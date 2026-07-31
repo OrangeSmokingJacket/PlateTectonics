@@ -84,9 +84,9 @@ add_executable(${PROJECT_NAME}
         App/simulation_kernel.cu
 )
 
-# set_target_properties(${PROJECT_NAME} PROPERTIES
-#         CUDA_SEPARABLE_COMPILATION ON
-# )
+set_target_properties(${PROJECT_NAME} PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
         imgui_lib
@@ -115,6 +115,8 @@ if (MSVC)
         $<$<COMPILE_LANGUAGE:CXX>:/diagnostics:caret>
         $<$<COMPILE_LANGUAGE:CXX>:/external:W0>
         $<$<COMPILE_LANGUAGE:CXX>:/external:anglebrackets>
+        $<$<COMPILE_LANGUAGE:CUDA>:-rdc=true>
+        $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
     )
 else()
     target_compile_options(${PROJECT_NAME} PRIVATE
@@ -122,5 +124,7 @@ else()
         $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
 
         $<$<COMPILE_LANGUAGE:CXX>:-fconcepts-diagnostics-depth=10>
+        $<$<COMPILE_LANGUAGE:CUDA>:-rdc=true>
+        $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
     )
 endif()

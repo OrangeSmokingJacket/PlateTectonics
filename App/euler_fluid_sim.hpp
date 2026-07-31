@@ -51,17 +51,21 @@ struct CudaDispatchBuffers {
     template <typename T>
     using SB = SegmentedBuffer<T, Cardinality(SimulationDomain::dimensions), SimulationConstants::domains>;
 
+    cublasHandle_t handle;
+    void* handle_workspace;
+    SB<double> pressure;
+    SB<double> divergence;
     SB<double> auxiliary;
     SB<double> residual;
     SB<double> search;
     SB<CoefficientsValues<double>> coefficients;
     SB<CoefficientsValues<double>> preconditioner;
-    cublasHandle_t handle;
 };
 struct CudaGraphs {
     cudaStream_t stream;
     cudaGraphExec_t apply_A;
     cudaGraphExec_t apply_M;
+    cudaGraphExec_t max_divergence;
 };
 
 class EulerFluidSim {

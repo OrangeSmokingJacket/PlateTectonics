@@ -1,6 +1,14 @@
 #include "simulation_kernel.hpp"
 #include <cublas_v2.h>
-#include <cuda_runtime.h>
+
+__device__ int max_divergence_index = 0;
+__device__ __managed__ double max_divergence = 0.0;
+
+double GetMaxDivergence() {
+    double result;
+    cudaMemcpyFromSymbol(&result, max_divergence, sizeof(double));
+    return result;
+}
 
 constexpr dim3 domain_dimensions{static_cast<uint32_t>(SimulationDomain::dimensions[0]),
                                  static_cast<uint32_t>(SimulationDomain::dimensions[1]),
@@ -68,6 +76,13 @@ static constexpr SimulationDomain::GridValues real_grid_stencil = [](){
 }();
 */
 
+using ValueType = SimulationDomain::GridValues::value_type;
+static constexpr size_t elements = SimulationDomain::GridValues::cardinality;
+static constexpr dim3 block_dimensions{8, 8, 8};
+static constexpr dim3 grid_dimensions{SimulationDomain::real_dimensions[0] / block_dimensions.x,
+                                      SimulationDomain::real_dimensions[1] / block_dimensions.y,
+                                      SimulationDomain::real_dimensions[2] / block_dimensions.z};
+
 void CreateApplySparseMatrixGraph(
     cudaGraph_t* graph,
     CudaDispatchBuffers* d_buffers,
@@ -76,12 +91,6 @@ void CreateApplySparseMatrixGraph(
     const CudaDispatchBuffers::SB<CoefficientsValues<double>> CudaDispatchBuffers::* d_coefficients_matrix,
     const std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* h_source,
     const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* d_source) {
-    using ValueType = SimulationDomain::GridValues::value_type;
-    static constexpr size_t elements = SimulationDomain::GridValues::cardinality;
-    static constexpr dim3 block_dimensions{8, 8, 8};
-    static constexpr dim3 grid_dimensions{SimulationDomain::real_dimensions[0] / block_dimensions.x,
-                                          SimulationDomain::real_dimensions[1] / block_dimensions.y,
-                                          SimulationDomain::real_dimensions[2] / block_dimensions.z};
     static constexpr size_t vec_size = elements * sizeof(ValueType);
 
     cudaStream_t capture_stream;
@@ -160,33 +169,43 @@ cudaGraph_t CreateApplyMGraph(CudaDispatchBuffers* d_buffers, SimulationDomain* 
     return CreateApplyMatrixGraph(d_buffers, domains, CreateApplyMGraph);
 }
 
-/*
-// It is easier to use a sencil for halo cells, then try to stride over them in dot product kernel
-SimulationDomain::GridValues::value_type RealCellsDotProduct(
-    CudaDispatchBuffers* d_buffers,
-    SimulationDomain* domains,
-    const std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* lhs,
-    const std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* rhs) {
-    using ValueType = SimulationDomain::GridValues::value_type;
-    static constexpr size_t elements = SimulationDomain::GridValues::cardinality;
-    static constexpr size_t threads = 256;
-    static constexpr size_t blocks = elements / threads + (elements % threads != 0);
-    ValueType result{};
+template <typename T>
+__global__ void ExtractVectorValue(const T* vector, const int* index, T* value) {
+    *value = vector[*index - 1];
+}
 
-    for (size_t i = 0; i < EulerFluidSim::domains; ++i) {
-        ValueType partial_result{};
-        cudaMemcpy(d_buffers->grid_buffers[0], (domains[i].*lhs)->flat_data(), elements * sizeof(ValueType), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_buffers->grid_buffers[1], real_grid_stencil.flat_data(), elements * sizeof(ValueType), cudaMemcpyHostToDevice);
+cudaGraph_t CreateMaxDivergenceGraph(CudaDispatchBuffers* d_buffers,
+                                     SimulationDomain* domains,
+                                     cublasHandle_t* handle,
+                                     cudaStream_t main_stream) {
+    static constexpr size_t vec_size = elements * sizeof(ValueType);
+    int* d_idx = nullptr;
+    double* d_max_divergence = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_idx), max_divergence_index);
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_max_divergence), max_divergence);
 
-        // Apply stencil to one of them before
-        MultiplyInplace<ValueType><<<blocks, threads>>>(d_buffers->grid_buffers[0], d_buffers->grid_buffers[1], elements);
-        cudaMemcpy(d_buffers->grid_buffers[1], (domains[i].*rhs)->flat_data(), elements * sizeof(ValueType), cudaMemcpyHostToDevice);
+    cudaStreamSynchronize(main_stream);
+    cudaMemset(d_buffers->divergence.ptr, 0, d_buffers->divergence.allocation_size);
+    // cuBLAS may allocate on first call
+    cublasIdamax(*handle, elements * SimulationConstants::domains, d_buffers->divergence.ptr, 1, d_idx);
 
-        // Dot product
-        cublasDdot(d_buffers->handle, elements, d_buffers->grid_buffers[0], 1, d_buffers->grid_buffers[1], 1, &partial_result);
-        result += partial_result;
+    cudaStreamSynchronize(main_stream);
+
+    cudaGraph_t graph;
+    cudaStreamBeginCapture(main_stream, cudaStreamCaptureModeThreadLocal);
+
+    for (size_t i = 0; i < SimulationConstants::domains; ++i) {
+        cudaMemcpyAsync(d_buffers->divergence.GetSegment(i),
+                        domains[i].cell_pressure_divergence_->flat_data(),
+                        vec_size,
+                        cudaMemcpyHostToDevice,
+                        main_stream);
     }
 
-    return result;
+    cublasIdamax(*handle, elements * SimulationConstants::domains, d_buffers->divergence.ptr, 1, d_idx);
+    ExtractVectorValue<ValueType><<<1, 1, 0, main_stream>>>(d_buffers->divergence.ptr, d_idx, d_max_divergence);
+
+    cudaStreamEndCapture(main_stream, &graph);
+
+    return graph;
 }
-*/
