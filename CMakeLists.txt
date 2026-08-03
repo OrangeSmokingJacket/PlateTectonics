@@ -98,7 +98,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         asset_loader
         cereal::cereal
 
-        CUDA::cublas
         CUDA::cudart
 
         camera_component

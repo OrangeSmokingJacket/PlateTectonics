@@ -352,8 +352,6 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     : thread_pool_(thread_pool)
     , domains_(std::make_unique<std::array<SimulationDomain, domains>>(
           InitializeDomainArray(std::make_index_sequence<domains>()))) {
-    static constexpr size_t workspace_size = 1 << 22;
-    cudaMalloc(&cuda_buffers_.handle_workspace, workspace_size);
     cudaMalloc(&cuda_buffers_.reduction_buffer, total_cells / max_pow2_multiple * sizeof(double));
     cudaMalloc(&cuda_buffers_.pressure.ptr, cuda_buffers_.pressure.allocation_size);
     cudaMalloc(&cuda_buffers_.divergence.ptr, cuda_buffers_.divergence.allocation_size);
@@ -390,11 +388,6 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
 
     cudaStreamCreateWithFlags(&cuda_graphs_.stream, cudaStreamNonBlocking);
 
-    cublasCreate(&cuda_buffers_.handle);
-    cublasSetStream(cuda_buffers_.handle, cuda_graphs_.stream);
-    cublasSetWorkspace(cuda_buffers_.handle, cuda_buffers_.handle_workspace, workspace_size);
-    cublasSetPointerMode(cuda_buffers_.handle, CUBLAS_POINTER_MODE_DEVICE);
-
     {
         auto graph = CreateApplyAGraph(&cuda_buffers_, domains_->data());
         cudaGraphInstantiate(&cuda_graphs_.apply_A, graph, 0);
@@ -406,8 +399,7 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
         cudaGraphDestroy(graph);
     }
     {
-        auto graph =
-            CreateMaxDivergenceGraph(&cuda_buffers_, domains_->data(), &cuda_buffers_.handle, cuda_graphs_.stream);
+        auto graph = CreateMaxDivergenceGraph(&cuda_buffers_, domains_->data());
         cudaGraphInstantiate(&cuda_graphs_.max_divergence, graph, 0);
         cudaGraphDestroy(graph);
     }
@@ -493,8 +485,6 @@ EulerFluidSim::~EulerFluidSim() {
     cudaGraphExecDestroy(cuda_graphs_.search_xpay);
     cudaGraphExecDestroy(cuda_graphs_.sync_auxiliary);
 
-    cublasDestroy(cuda_buffers_.handle);
-
     for (auto& domain : *domains_) {
         cudaHostUnregister(domain.cell_pressure_->flat_begin());
         cudaHostUnregister(domain.cell_pressure_divergence_->flat_begin());
@@ -505,7 +495,6 @@ EulerFluidSim::~EulerFluidSim() {
         cudaHostUnregister(domain.preconditioner_->flat_begin());
     }
 
-    cudaFree(cuda_buffers_.handle_workspace);
     cudaFree(cuda_buffers_.reduction_buffer);
     cudaFree(cuda_buffers_.pressure.ptr);
     cudaFree(cuda_buffers_.divergence.ptr);
@@ -761,7 +750,7 @@ void EulerFluidSim::PCG() {
     cudaGraphLaunch(cuda_graphs_.max_divergence, cuda_graphs_.stream);
     cudaStreamSynchronize(cuda_graphs_.stream);
 
-    if (std::abs(GetScalarOutput()) < std::numeric_limits<double>::epsilon())
+    if (GetScalarOutput() < std::numeric_limits<double>::epsilon())
         return;
 
     // TODO: Divergence is updated on Host side for now

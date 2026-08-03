@@ -10,10 +10,7 @@ cudaGraph_t CreateDotProductR(CudaDispatchBuffers* d_buffers);
 cudaGraph_t CreateDotProductD(CudaDispatchBuffers* d_buffers);
 cudaGraph_t CreateLengthR(CudaDispatchBuffers* d_buffers);
 
-cudaGraph_t CreateMaxDivergenceGraph(CudaDispatchBuffers* d_buffers,
-                                     SimulationDomain* domains,
-                                     cublasHandle_t* handle,
-                                     cudaStream_t main_stream);
+cudaGraph_t CreateMaxDivergenceGraph(CudaDispatchBuffers* d_buffers, SimulationDomain* domains);
 
 cudaGraph_t CreateXpYP(CudaDispatchBuffers* d_buffers);
 cudaGraph_t CreateXpYR(CudaDispatchBuffers* d_buffers);

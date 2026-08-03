@@ -1,7 +1,5 @@
 #include "simulation_kernel.hpp"
-#include <cublas_v2.h>
 
-__device__ int max_divergence_index = 0;
 // max divergence and dot_product
 __device__ __managed__ double scalar_output = 0.0;
 __device__ __managed__ double d_sigma = 0.0;
@@ -194,6 +192,26 @@ __global__ void PartialSum(const T* v, T* result) {
     Reduction<T>(partial_sum, result);
 }
 
+template <typename T>
+__global__ void AbsMax(const T* v, T* result) {
+    __shared__ T s_data[dispatch_size];
+
+    uint32_t vec_pos = blockIdx.x * blockDim.x + threadIdx.x;
+    s_data[threadIdx.x] = (vec_pos < vec_length) ? v[vec_pos] : T{};
+    __syncthreads();
+
+    for (uint32_t stride = 1; stride < blockDim.x; stride *= 2) {
+        if (threadIdx.x % (stride * 2) == 0) {
+            s_data[threadIdx.x] = max(abs(s_data[threadIdx.x]), abs(s_data[threadIdx.x + stride]));
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        result[blockIdx.x] = s_data[0];
+    }
+}
+
 cudaGraph_t CreateDotProduct(CudaDispatchBuffers* d_buffers,
                              const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* lhs_buffer,
                              const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* rhs_buffer) {
@@ -234,38 +252,32 @@ __global__ void ExtractVectorValue(const T* vector, const int* index, T* value) 
     *value = vector[*index - 1];
 }
 
-cudaGraph_t CreateMaxDivergenceGraph(CudaDispatchBuffers* d_buffers,
-                                     SimulationDomain* domains,
-                                     cublasHandle_t* handle,
-                                     cudaStream_t main_stream) {
+cudaGraph_t CreateMaxDivergenceGraph(CudaDispatchBuffers* d_buffers, SimulationDomain* domains) {
     static constexpr size_t vec_size = elements * sizeof(ValueType);
-    int* d_idx = nullptr;
     double* d_scalar_output = nullptr;
-    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_idx), max_divergence_index);
     cudaGetSymbolAddress(reinterpret_cast<void**>(&d_scalar_output), scalar_output);
 
-    // cuBLAS may allocate on first call
-    cudaStreamSynchronize(main_stream);
-    cudaMemset(d_buffers->divergence.ptr, 0, d_buffers->divergence.allocation_size);
-    cublasIdamax(*handle, elements * SimulationConstants::domains, d_buffers->divergence.ptr, 1, d_idx);
-
-    cudaStreamSynchronize(main_stream);
-
     cudaGraph_t graph;
-    cudaStreamBeginCapture(main_stream, cudaStreamCaptureModeThreadLocal);
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
 
     for (size_t i = 0; i < SimulationConstants::domains; ++i) {
         cudaMemcpyAsync(d_buffers->divergence.GetSegment(i),
                         domains[i].cell_pressure_divergence_->flat_data(),
                         vec_size,
                         cudaMemcpyHostToDevice,
-                        main_stream);
+                        capture_stream);
     }
 
-    cublasIdamax(*handle, elements * SimulationConstants::domains, d_buffers->divergence.ptr, 1, d_idx);
-    ExtractVectorValue<ValueType><<<1, 1, 0, main_stream>>>(d_buffers->divergence.ptr, d_idx, d_scalar_output);
+    AbsMax<ValueType>
+        <<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->divergence.ptr, d_buffers->reduction_buffer);
 
-    cudaStreamEndCapture(main_stream, &graph);
+    static_assert(std::bit_ceil(blocks) <= 1024);
+    AbsMax<ValueType><<<1, std::bit_ceil(blocks), 0, capture_stream>>>(d_buffers->reduction_buffer, d_scalar_output);
+
+    cudaStreamEndCapture(capture_stream, &graph);
+    cudaStreamDestroy(capture_stream);
 
     return graph;
 }
@@ -301,6 +313,7 @@ cudaGraph_t CreateXpYP(CudaDispatchBuffers* d_buffers) {
         <<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->search.ptr, d_buffers->pressure.ptr, d_alpha_ptr);
 
     cudaStreamEndCapture(capture_stream, &graph);
+    cudaStreamDestroy(capture_stream);
 
     return graph;
 }
@@ -317,6 +330,7 @@ cudaGraph_t CreateXpYR(CudaDispatchBuffers* d_buffers) {
         <<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->auxiliary.ptr, d_buffers->residual.ptr, d_alpha_ptr);
 
     cudaStreamEndCapture(capture_stream, &graph);
+    cudaStreamDestroy(capture_stream);
 
     return graph;
 }
@@ -333,6 +347,7 @@ cudaGraph_t CreateXpYD(CudaDispatchBuffers* d_buffers) {
         <<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->auxiliary.ptr, d_buffers->search.ptr, d_beta_ptr);
 
     cudaStreamEndCapture(capture_stream, &graph);
+    cudaStreamDestroy(capture_stream);
 
     return graph;
 }
@@ -443,6 +458,7 @@ cudaGraph_t CreateSyncOrthogonalXPlus(CudaDispatchBuffers* d_buffers) {
     SyncFromXPlus<ValueType><<<blocks, threads, 0, capture_stream>>>(d_buffers->auxiliary.ptr);
 
     cudaStreamEndCapture(capture_stream, &graph);
+    cudaStreamDestroy(capture_stream);
 
     return graph;
 }
@@ -459,6 +475,7 @@ cudaGraph_t CreateSyncOrthogonalXMinus(CudaDispatchBuffers* d_buffers) {
     SyncFromXMinus<ValueType><<<blocks, threads, 0, capture_stream>>>(d_buffers->auxiliary.ptr);
 
     cudaStreamEndCapture(capture_stream, &graph);
+    cudaStreamDestroy(capture_stream);
 
     return graph;
 }
@@ -475,6 +492,7 @@ cudaGraph_t CreateSyncOrthogonalYPlus(CudaDispatchBuffers* d_buffers) {
     SyncFromYPlus<ValueType><<<blocks, threads, 0, capture_stream>>>(d_buffers->auxiliary.ptr);
 
     cudaStreamEndCapture(capture_stream, &graph);
+    cudaStreamDestroy(capture_stream);
 
     return graph;
 }
@@ -491,6 +509,7 @@ cudaGraph_t CreateSyncOrthogonalYMinus(CudaDispatchBuffers* d_buffers) {
     SyncFromYMinus<ValueType><<<blocks, threads, 0, capture_stream>>>(d_buffers->auxiliary.ptr);
 
     cudaStreamEndCapture(capture_stream, &graph);
+    cudaStreamDestroy(capture_stream);
 
     return graph;
 }

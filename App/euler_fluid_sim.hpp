@@ -7,7 +7,7 @@
 #include <Core/Engine/Assets/Texture/texture.hpp>
 #include <Math/math_def.hpp>
 #include <Utils/thread_pool.hpp>
-#include <cublas_v2.h>
+#include <cuda_runtime.h>
 
 #include <cmath>
 #include <memory>
@@ -51,8 +51,6 @@ struct CudaDispatchBuffers {
     template <typename T>
     using SB = SegmentedBuffer<T, Cardinality(SimulationDomain::dimensions), SimulationConstants::domains>;
 
-    cublasHandle_t handle;
-    void* handle_workspace;
     double* reduction_buffer;
     SB<double> pressure;
     SB<double> divergence;
