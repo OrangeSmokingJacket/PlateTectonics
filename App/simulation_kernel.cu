@@ -2,11 +2,12 @@
 #include <cublas_v2.h>
 
 __device__ int max_divergence_index = 0;
-__device__ __managed__ double max_divergence = 0.0;
+// max divergence and dot_product
+__device__ __managed__ double scalar_output = 0.0;
 
-double GetMaxDivergence() {
+double GetScalarOutput() {
     double result;
-    cudaMemcpyFromSymbol(&result, max_divergence, sizeof(double));
+    cudaMemcpyFromSymbol(&result, scalar_output, sizeof(double));
     return result;
 }
 
@@ -42,39 +43,6 @@ __global__ void ApplyCoefficientsKernel(T* __restrict__ target,
             source[GridIndex(index_x, index_y - 1, index_z)] +
         coefficients[GridIndex(index_x, index_y, index_z - 1)].plusz * source[GridIndex(index_x, index_y, index_z - 1)];
 }
-
-/*
-template <typename T>
-__global__ void MultiplyInplace(T* lhs, const T* rhs, uint32_t max) {
-    uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (index < max) {
-        lhs[index] *= rhs[index];
-    }
-}
-
-// CPU side
-
-static constexpr SimulationDomain::GridValues real_grid_stencil = [](){
-    SimulationDomain::GridValues result{};
-    for(size_t x = 0; x < SimulationDomain::dimensions[0]; ++x) {
-        for(size_t y = 0; y < SimulationDomain::dimensions[1]; ++y) {
-            for(size_t z = 0; z < SimulationDomain::dimensions[2]; ++z) {
-                if (x >= SimulationDomain::halo_size[0] &&
-                    y >= SimulationDomain::halo_size[1] &&
-                    z >= SimulationDomain::halo_size[2] &&
-                    x < SimulationDomain::dimensions[0] - SimulationDomain::halo_size[0] &&
-                    y < SimulationDomain::dimensions[1] - SimulationDomain::halo_size[1] &&
-                    z < SimulationDomain::dimensions[2] - SimulationDomain::halo_size[2]) {
-                        result[x][y][z] = 1.0;
-                    } else {
-                        result[x][y][z] = 0.0;
-                    }
-            }
-        }
-    }
-    return result;
-}();
-*/
 
 using ValueType = SimulationDomain::GridValues::value_type;
 static constexpr size_t elements = SimulationDomain::GridValues::cardinality;
@@ -169,6 +137,96 @@ cudaGraph_t CreateApplyMGraph(CudaDispatchBuffers* d_buffers, SimulationDomain* 
     return CreateApplyMatrixGraph(d_buffers, domains, CreateApplyMGraph);
 }
 
+static constexpr size_t vec_length = EulerFluidSim::total_cells;
+static constexpr size_t dispatch_size = EulerFluidSim::max_pow2_multiple;
+static constexpr size_t blocks = vec_length / dispatch_size;
+
+// [0, 1]
+__device__ uint32_t CellReality(uint32_t flat_index) {
+    // localize to domain
+    flat_index %= domain_dimensions.x * domain_dimensions.y * domain_dimensions.z;
+    uint32_t x = flat_index / (domain_dimensions.y * domain_dimensions.z);
+    flat_index -= x * domain_dimensions.y * domain_dimensions.z;
+    uint32_t y = flat_index / domain_dimensions.z;
+    // z does not have halo's, so it is skipped
+    return x >= halo_size.x && y >= halo_size.y && x < (domain_dimensions.x - halo_size.x) &&
+           y < (domain_dimensions.y - halo_size.y);
+}
+
+template <typename T>
+__device__ void Reduction(T* partial_sum, T* result) {
+    for (uint32_t stride = 1; stride < blockDim.x; stride *= 2) {
+        if (threadIdx.x % (stride * 2) == 0) {
+            partial_sum[threadIdx.x] += partial_sum[threadIdx.x + stride];
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        result[blockIdx.x] = partial_sum[0];
+    }
+}
+
+template <typename T>
+__global__ void RealCellsDotProduct(const T* lhs, const T* rhs, T* result) {
+    __shared__ T partial_sum[dispatch_size];
+
+    uint32_t vec_pos = blockIdx.x * blockDim.x + threadIdx.x;
+
+    partial_sum[threadIdx.x] = lhs[vec_pos] * rhs[vec_pos] * CellReality(vec_pos);
+    __syncthreads();
+
+    Reduction<T>(partial_sum, result);
+}
+
+template <typename T, bool IsPower2>
+__global__ void PartialSum(const T* v, T* result) {
+    __shared__ T partial_sum[dispatch_size];
+
+    uint32_t vec_pos = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if constexpr (IsPower2) {
+        partial_sum[threadIdx.x] = v[vec_pos];
+    } else {
+        partial_sum[threadIdx.x] = (vec_pos < vec_length) ? v[vec_pos] : T{};
+    }
+    __syncthreads();
+
+    Reduction<T>(partial_sum, result);
+}
+
+cudaGraph_t CreateDotProduct(CudaDispatchBuffers* d_buffers,
+                             const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* rhs_buffer) {
+    double* d_scalar_output = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_scalar_output), scalar_output);
+
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
+
+    RealCellsDotProduct<ValueType><<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->auxiliary.ptr,
+                                                                                 (d_buffers->*rhs_buffer).ptr,
+                                                                                 d_buffers->reduction_buffer);
+
+    static_assert(std::bit_ceil(blocks) <= 1024);
+    PartialSum<ValueType, false>
+        <<<1, std::bit_ceil(blocks), 0, capture_stream>>>(d_buffers->reduction_buffer, d_scalar_output);
+
+    cudaStreamEndCapture(capture_stream, &graph);
+    cudaStreamDestroy(capture_stream);
+
+    return graph;
+}
+
+cudaGraph_t CreateDotProductR(CudaDispatchBuffers* d_buffers) {
+    return CreateDotProduct(d_buffers, &CudaDispatchBuffers::residual);
+}
+
+cudaGraph_t CreateDotProductD(CudaDispatchBuffers* d_buffers) {
+    return CreateDotProduct(d_buffers, &CudaDispatchBuffers::search);
+}
+
 template <typename T>
 __global__ void ExtractVectorValue(const T* vector, const int* index, T* value) {
     *value = vector[*index - 1];
@@ -180,13 +238,13 @@ cudaGraph_t CreateMaxDivergenceGraph(CudaDispatchBuffers* d_buffers,
                                      cudaStream_t main_stream) {
     static constexpr size_t vec_size = elements * sizeof(ValueType);
     int* d_idx = nullptr;
-    double* d_max_divergence = nullptr;
+    double* d_scalar_output = nullptr;
     cudaGetSymbolAddress(reinterpret_cast<void**>(&d_idx), max_divergence_index);
-    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_max_divergence), max_divergence);
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_scalar_output), scalar_output);
 
+    // cuBLAS may allocate on first call
     cudaStreamSynchronize(main_stream);
     cudaMemset(d_buffers->divergence.ptr, 0, d_buffers->divergence.allocation_size);
-    // cuBLAS may allocate on first call
     cublasIdamax(*handle, elements * SimulationConstants::domains, d_buffers->divergence.ptr, 1, d_idx);
 
     cudaStreamSynchronize(main_stream);
@@ -203,7 +261,7 @@ cudaGraph_t CreateMaxDivergenceGraph(CudaDispatchBuffers* d_buffers,
     }
 
     cublasIdamax(*handle, elements * SimulationConstants::domains, d_buffers->divergence.ptr, 1, d_idx);
-    ExtractVectorValue<ValueType><<<1, 1, 0, main_stream>>>(d_buffers->divergence.ptr, d_idx, d_max_divergence);
+    ExtractVectorValue<ValueType><<<1, 1, 0, main_stream>>>(d_buffers->divergence.ptr, d_idx, d_scalar_output);
 
     cudaStreamEndCapture(main_stream, &graph);
 

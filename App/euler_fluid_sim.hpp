@@ -53,6 +53,7 @@ struct CudaDispatchBuffers {
 
     cublasHandle_t handle;
     void* handle_workspace;
+    double* reduction_buffer;
     SB<double> pressure;
     SB<double> divergence;
     SB<double> auxiliary;
@@ -66,6 +67,8 @@ struct CudaGraphs {
     cudaGraphExec_t apply_A;
     cudaGraphExec_t apply_M;
     cudaGraphExec_t max_divergence;
+    cudaGraphExec_t dot_product_r;
+    cudaGraphExec_t dot_product_d;
 };
 
 class EulerFluidSim {
@@ -80,6 +83,9 @@ public:
         // x and y are equal, but we have to pick one
         SimulationDomain::real_dimensions[0] * SimulationConstants::scale * 0.5f};
     static constexpr float inner_sphere_radius = world_origin_offset[2];
+    static constexpr size_t total_cells = domains * Cardinality(SimulationDomain::dimensions);
+    // max safe 2^N, where total_cells % (2^N) == 0
+    static constexpr size_t max_pow2_multiple = 64;
 
     // Temp render ptr to draw grid
     explicit EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThreadPool* thread_pool);

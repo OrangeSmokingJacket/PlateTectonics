@@ -354,6 +354,7 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
           InitializeDomainArray(std::make_index_sequence<domains>()))) {
     static constexpr size_t workspace_size = 1 << 22;
     cudaMalloc(&cuda_buffers_.handle_workspace, workspace_size);
+    cudaMalloc(&cuda_buffers_.reduction_buffer, total_cells / max_pow2_multiple * sizeof(double));
     cudaMalloc(&cuda_buffers_.pressure.ptr, cuda_buffers_.pressure.allocation_size);
     cudaMalloc(&cuda_buffers_.divergence.ptr, cuda_buffers_.divergence.allocation_size);
     cudaMalloc(&cuda_buffers_.auxiliary.ptr, cuda_buffers_.auxiliary.allocation_size);
@@ -410,6 +411,16 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
         cudaGraphInstantiate(&cuda_graphs_.max_divergence, graph, 0);
         cudaGraphDestroy(graph);
     }
+    {
+        auto graph = CreateDotProductR(&cuda_buffers_);
+        cudaGraphInstantiate(&cuda_graphs_.dot_product_r, graph, 0);
+        cudaGraphDestroy(graph);
+    }
+    {
+        auto graph = CreateDotProductD(&cuda_buffers_);
+        cudaGraphInstantiate(&cuda_graphs_.dot_product_d, graph, 0);
+        cudaGraphDestroy(graph);
+    }
 
     for (size_t i = 0; i < domains; ++i) {
         cudaMemcpyAsync(cuda_buffers_.coefficients.GetSegment(i),
@@ -447,6 +458,8 @@ EulerFluidSim::~EulerFluidSim() {
     cudaGraphExecDestroy(cuda_graphs_.apply_A);
     cudaGraphExecDestroy(cuda_graphs_.apply_M);
     cudaGraphExecDestroy(cuda_graphs_.max_divergence);
+    cudaGraphExecDestroy(cuda_graphs_.dot_product_r);
+    cudaGraphExecDestroy(cuda_graphs_.dot_product_d);
 
     cublasDestroy(cuda_buffers_.handle);
 
@@ -461,6 +474,7 @@ EulerFluidSim::~EulerFluidSim() {
     }
 
     cudaFree(cuda_buffers_.handle_workspace);
+    cudaFree(cuda_buffers_.reduction_buffer);
     cudaFree(cuda_buffers_.pressure.ptr);
     cudaFree(cuda_buffers_.divergence.ptr);
     cudaFree(cuda_buffers_.auxiliary.ptr);
@@ -715,7 +729,7 @@ void EulerFluidSim::PCG() {
     cudaGraphLaunch(cuda_graphs_.max_divergence, cuda_graphs_.stream);
     cudaStreamSynchronize(cuda_graphs_.stream);
 
-    if (std::abs(GetMaxDivergence()) < std::numeric_limits<double>::epsilon())
+    if (std::abs(GetScalarOutput()) < std::numeric_limits<double>::epsilon())
         return;
 
     for (size_t i = 0; i < domains; ++i) {
@@ -725,33 +739,14 @@ void EulerFluidSim::PCG() {
     cudaGraphLaunch(cuda_graphs_.apply_M, cuda_graphs_.stream);
     cudaStreamSynchronize(cuda_graphs_.stream);
 
+    cudaGraphLaunch(cuda_graphs_.dot_product_r, cuda_graphs_.stream);
+    cudaStreamSynchronize(cuda_graphs_.stream);
+    double sigma = GetScalarOutput();
+
     SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
 
-    //for (size_t i = 0; i < domains; ++i) {
-    //    (*domains_)[i].search_->CopyFrom(*(*domains_)[i].auxiliary_);
-    //}
-    //double sigma = RealCellsDotProduct(&cuda_buffers_,
-    //                                   domains_->data(),
-    //                                   &SimulationDomain::auxiliary_,
-    //                                   &SimulationDomain::residual_);
-    double sigma = 0.0;
-    {
-        std::latch sync_latch{domains};
-        std::atomic<double> dot_prod{0.0};
-
-        for (size_t i = 0; i < domains; ++i) {
-            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-            thread_pool_->Enqueue([domain_ref, &dot_prod, &sync_latch]() {
-                auto& domain = domain_ref.get();
-                domain.search_->CopyFrom(*domain.auxiliary_);
-                dot_prod.fetch_add(
-                    domain.RealCellsDotProduct(&SimulationDomain::auxiliary_, &SimulationDomain::residual_));
-                sync_latch.count_down();
-            });
-        }
-
-        sync_latch.wait();
-        sigma = dot_prod.load();
+    for (size_t i = 0; i < domains; ++i) {
+        (*domains_)[i].search_->CopyFrom(*(*domains_)[i].auxiliary_);
     }
 
     for (; last_PCG_iteration_count < SimulationConstants::max_solver_iterations; last_PCG_iteration_count++) {
@@ -761,32 +756,12 @@ void EulerFluidSim::PCG() {
         cudaGraphLaunch(cuda_graphs_.apply_A, cuda_graphs_.stream);
         cudaStreamSynchronize(cuda_graphs_.stream);
 
+        cudaGraphLaunch(cuda_graphs_.dot_product_d, cuda_graphs_.stream);
+        cudaStreamSynchronize(cuda_graphs_.stream);
+        double alpha = sigma / GetScalarOutput();
+
         // TODO: could be synced while waiting for dot_product calculation
         SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
-
-        //double dot_product = RealCellsDotProduct(&cuda_buffers_,
-        //                                         domains_->data(),
-        //                                         &SimulationDomain::auxiliary_,
-        //                                         &SimulationDomain::search_);
-        double dot_product = 0.0;
-        {
-            std::latch sync_latch{domains};
-            std::atomic<double> dot_prod{0.0};
-
-            for (size_t i = 0; i < domains; ++i) {
-                std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-                thread_pool_->Enqueue([domain_ref, &dot_prod, &sync_latch]() {
-                    auto& domain = domain_ref.get();
-                    dot_prod.fetch_add(
-                        domain.RealCellsDotProduct(&SimulationDomain::auxiliary_, &SimulationDomain::search_));
-                    sync_latch.count_down();
-                });
-            }
-
-            sync_latch.wait();
-            dot_product = dot_prod.load();
-        }
-        double alpha = sigma / dot_product;
 
         {
             std::latch sync_latch{domains};
@@ -813,31 +788,13 @@ void EulerFluidSim::PCG() {
         cudaGraphLaunch(cuda_graphs_.apply_M, cuda_graphs_.stream);
         cudaStreamSynchronize(cuda_graphs_.stream);
 
+        cudaGraphLaunch(cuda_graphs_.dot_product_r, cuda_graphs_.stream);
+        cudaStreamSynchronize(cuda_graphs_.stream);
+        double sigma_new = GetScalarOutput();
+
         // TODO: could be synced while waiting for sigma_new calculation
         SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
 
-        //double sigma_new = RealCellsDotProduct(&cuda_buffers_,
-        //                                       domains_->data(),
-        //                                       &SimulationDomain::auxiliary_,
-        //                                       &SimulationDomain::residual_);
-        double sigma_new = 0.0;
-        {
-            std::latch sync_latch{domains};
-            std::atomic<double> dot_prod{0.0};
-
-            for (size_t i = 0; i < domains; ++i) {
-                std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-                thread_pool_->Enqueue([domain_ref, &dot_prod, &sync_latch]() {
-                    auto& domain = domain_ref.get();
-                    dot_prod.fetch_add(
-                        domain.RealCellsDotProduct(&SimulationDomain::auxiliary_, &SimulationDomain::residual_));
-                    sync_latch.count_down();
-                });
-            }
-
-            sync_latch.wait();
-            sigma_new = dot_prod.load();
-        }
         double beta = sigma_new / sigma;
         {
             std::latch sync_latch{domains};
