@@ -69,6 +69,10 @@ struct CudaGraphs {
     cudaGraphExec_t max_divergence;
     cudaGraphExec_t dot_product_r;
     cudaGraphExec_t dot_product_d;
+    cudaGraphExec_t length_r;
+    cudaGraphExec_t pressure_axpy;
+    cudaGraphExec_t residual_axpy;
+    cudaGraphExec_t search_xpay;
 };
 
 class EulerFluidSim {

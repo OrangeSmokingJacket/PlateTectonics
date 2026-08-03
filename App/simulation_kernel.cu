@@ -4,12 +4,21 @@
 __device__ int max_divergence_index = 0;
 // max divergence and dot_product
 __device__ __managed__ double scalar_output = 0.0;
+__device__ __managed__ double d_sigma = 0.0;
+__device__ __managed__ double d_new_sigma = 0.0;
+__device__ __managed__ double d_alpha = 0.0;
+__device__ __managed__ double d_beta = 0.0;
 
 double GetScalarOutput() {
     double result;
     cudaMemcpyFromSymbol(&result, scalar_output, sizeof(double));
     return result;
 }
+
+void SetSigma(double val) { cudaMemcpyToSymbol(d_sigma, &val, sizeof(double)); }
+void SetNewSigma(double val) { cudaMemcpyToSymbol(d_new_sigma, &val, sizeof(double)); }
+void SetAlpha(double val) { cudaMemcpyToSymbol(d_alpha, &val, sizeof(double)); }
+void SetBeta(double val) { cudaMemcpyToSymbol(d_beta, &val, sizeof(double)); }
 
 constexpr dim3 domain_dimensions{static_cast<uint32_t>(SimulationDomain::dimensions[0]),
                                  static_cast<uint32_t>(SimulationDomain::dimensions[1]),
@@ -57,19 +66,12 @@ void CreateApplySparseMatrixGraph(
     SimulationDomain* domains,
     size_t domain_index,
     const CudaDispatchBuffers::SB<CoefficientsValues<double>> CudaDispatchBuffers::* d_coefficients_matrix,
-    const std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* h_source,
     const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* d_source) {
     static constexpr size_t vec_size = elements * sizeof(ValueType);
 
     cudaStream_t capture_stream;
     cudaStreamCreate(&capture_stream);
     cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
-
-    cudaMemcpyAsync((d_buffers->*d_source).GetSegment(domain_index),
-                    (domains[domain_index].*h_source)->flat_data(),
-                    vec_size,
-                    cudaMemcpyHostToDevice,
-                    capture_stream);
 
     ApplyCoefficientsKernel<ValueType><<<grid_dimensions, block_dimensions, 0, capture_stream>>>(
         d_buffers->auxiliary.GetSegment(domain_index),
@@ -93,7 +95,6 @@ CreateApplyAGraph(cudaGraph_t* graph, CudaDispatchBuffers* d_buffers, Simulation
                                  domains,
                                  domain_index,
                                  &CudaDispatchBuffers::coefficients,
-                                 &SimulationDomain::search_,
                                  &CudaDispatchBuffers::search);
 }
 
@@ -104,7 +105,6 @@ CreateApplyMGraph(cudaGraph_t* graph, CudaDispatchBuffers* d_buffers, Simulation
                                  domains,
                                  domain_index,
                                  &CudaDispatchBuffers::preconditioner,
-                                 &SimulationDomain::residual_,
                                  &CudaDispatchBuffers::residual);
 }
 
@@ -196,6 +196,7 @@ __global__ void PartialSum(const T* v, T* result) {
 }
 
 cudaGraph_t CreateDotProduct(CudaDispatchBuffers* d_buffers,
+                             const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* lhs_buffer,
                              const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* rhs_buffer) {
     double* d_scalar_output = nullptr;
     cudaGetSymbolAddress(reinterpret_cast<void**>(&d_scalar_output), scalar_output);
@@ -205,7 +206,7 @@ cudaGraph_t CreateDotProduct(CudaDispatchBuffers* d_buffers,
     cudaStreamCreate(&capture_stream);
     cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
 
-    RealCellsDotProduct<ValueType><<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->auxiliary.ptr,
+    RealCellsDotProduct<ValueType><<<blocks, dispatch_size, 0, capture_stream>>>((d_buffers->*lhs_buffer).ptr,
                                                                                  (d_buffers->*rhs_buffer).ptr,
                                                                                  d_buffers->reduction_buffer);
 
@@ -220,11 +221,13 @@ cudaGraph_t CreateDotProduct(CudaDispatchBuffers* d_buffers,
 }
 
 cudaGraph_t CreateDotProductR(CudaDispatchBuffers* d_buffers) {
-    return CreateDotProduct(d_buffers, &CudaDispatchBuffers::residual);
+    return CreateDotProduct(d_buffers, &CudaDispatchBuffers::auxiliary, &CudaDispatchBuffers::residual);
 }
-
 cudaGraph_t CreateDotProductD(CudaDispatchBuffers* d_buffers) {
-    return CreateDotProduct(d_buffers, &CudaDispatchBuffers::search);
+    return CreateDotProduct(d_buffers, &CudaDispatchBuffers::auxiliary, &CudaDispatchBuffers::search);
+}
+cudaGraph_t CreateLengthR(CudaDispatchBuffers* d_buffers) {
+    return CreateDotProduct(d_buffers, &CudaDispatchBuffers::residual, &CudaDispatchBuffers::residual);
 }
 
 template <typename T>
@@ -264,6 +267,73 @@ cudaGraph_t CreateMaxDivergenceGraph(CudaDispatchBuffers* d_buffers,
     ExtractVectorValue<ValueType><<<1, 1, 0, main_stream>>>(d_buffers->divergence.ptr, d_idx, d_scalar_output);
 
     cudaStreamEndCapture(main_stream, &graph);
+
+    return graph;
+}
+
+enum class AXpY_op : uint8_t { plus, minus };
+
+template <typename T, AXpY_op op>
+__global__ void AXpY(const T* __restrict__ x, T* __restrict__ y, const T* a) {
+    size_t vec_pos = blockDim.x * blockIdx.x + threadIdx.x;
+    if constexpr (op == AXpY_op::plus) {
+        y[vec_pos] = *a * x[vec_pos] + y[vec_pos];
+    } else {
+        y[vec_pos] = -(*a) * x[vec_pos] + y[vec_pos];
+    }
+}
+
+template <typename T>
+__global__ void XpAY(const T* __restrict__ x, T* __restrict__ y, const T* a) {
+    size_t vec_pos = blockDim.x * blockIdx.x + threadIdx.x;
+    y[vec_pos] = x[vec_pos] + *a * y[vec_pos];
+}
+
+cudaGraph_t CreateXpYP(CudaDispatchBuffers* d_buffers) {
+    double* d_alpha_ptr = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_alpha_ptr), d_alpha);
+
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
+
+    AXpY<ValueType, AXpY_op::plus>
+        <<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->search.ptr, d_buffers->pressure.ptr, d_alpha_ptr);
+
+    cudaStreamEndCapture(capture_stream, &graph);
+
+    return graph;
+}
+cudaGraph_t CreateXpYR(CudaDispatchBuffers* d_buffers) {
+    double* d_alpha_ptr = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_alpha_ptr), d_alpha);
+
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
+
+    AXpY<ValueType, AXpY_op::minus>
+        <<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->auxiliary.ptr, d_buffers->residual.ptr, d_alpha_ptr);
+
+    cudaStreamEndCapture(capture_stream, &graph);
+
+    return graph;
+}
+cudaGraph_t CreateXpYD(CudaDispatchBuffers* d_buffers) {
+    double* d_beta_ptr = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_beta_ptr), d_beta);
+
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
+
+    XpAY<ValueType>
+        <<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->auxiliary.ptr, d_buffers->search.ptr, d_beta_ptr);
+
+    cudaStreamEndCapture(capture_stream, &graph);
 
     return graph;
 }
