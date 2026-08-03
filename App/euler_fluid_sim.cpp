@@ -54,15 +54,15 @@ constexpr std::array<WNeighbour, 6> w_neighbours{WNeighbour{1, 4, 2, 5},
 
 // TODO: separate array for orthogonal directions
 static constexpr std::array directions{
-    math::vec3<int>{-1, -1, 0},
-    math::vec3<int>{-1, 0, 0},
-    math::vec3<int>{-1, 1, 0},
-    math::vec3<int>{0, -1, 0},
-    // math::vec3<int>{0, 0, 0}, skip itself
-    math::vec3<int>{0, 1, 0},
-    math::vec3<int>{1, -1, 0},
-    math::vec3<int>{1, 0, 0},
-    math::vec3<int>{1, 1, 0},
+    math::vec2<int>{-1, -1},
+    math::vec2<int>{-1, 0},
+    math::vec2<int>{-1, 1},
+    math::vec2<int>{0, -1},
+    // math::vec2<int>{0, 0}, skip itself
+    math::vec2<int>{0, 1},
+    math::vec2<int>{1, -1},
+    math::vec2<int>{1, 0},
+    math::vec2<int>{1, 1},
 };
 
 // Is not influenced by .w
@@ -213,12 +213,12 @@ void SyncGridValues(std::array<SimulationDomain, EulerFluidSim::domains>& domain
 
             auto [hx, cx] = DestinationRange<Stagger>(dir.x, 0);
             auto [hy, cy] = DestinationRange<Stagger>(dir.y, 1);
-            auto [hz, cz] = DestinationRange<Stagger>(dir.z, 2);
+            auto [hz, cz] = DestinationRange<Stagger>(0, 2);
 
             if (dir.x * dir.y != 0) {
                 auto sx = SameW::SourceAdjustment(-dir.x, 0);
                 auto sy = SameW::SourceAdjustment(-dir.y, 1);
-                auto sz = SameW::SourceAdjustment(-dir.z, 2);
+                auto sz = SameW::SourceAdjustment(0, 2);
 
                 auto domain_index = dw;
                 for (size_t i = 0; i < cx; ++i) {
@@ -230,7 +230,7 @@ void SyncGridValues(std::array<SimulationDomain, EulerFluidSim::domains>& domain
                     }
                 }
             } else {
-                auto sz = SameW::SourceAdjustment(dir.z, 2);
+                auto sz = SameW::SourceAdjustment(0, 2);
 
                 auto adj = dir.x == 0 ? DifferentW::SourceAdjustmentY(dir.y) : DifferentW::SourceAdjustmentX(dir.x);
                 size_t domain_index_from;
@@ -283,15 +283,15 @@ void SyncGridVelocitiesXY(std::array<SimulationDomain, EulerFluidSim::domains>& 
 
             auto [x_hx, x_cx] = DestinationRange<StaggerX>(dir.x, 0);
             auto [x_hy, x_cy] = DestinationRange<StaggerX>(dir.y, 1);
-            auto [x_hz, x_cz] = DestinationRange<StaggerX>(dir.z, 2);
+            auto [x_hz, x_cz] = DestinationRange<StaggerX>(0, 2);
             auto [y_hx, y_cx] = DestinationRange<StaggerY>(dir.x, 0);
             auto [y_hy, y_cy] = DestinationRange<StaggerY>(dir.y, 1);
-            auto [y_hz, y_cz] = DestinationRange<StaggerY>(dir.z, 2);
+            auto [y_hz, y_cz] = DestinationRange<StaggerY>(0, 2);
 
             if (dir.x * dir.y != 0) {
                 continue;
             } else {
-                auto sz = SameW::SourceAdjustment(dir.z, 2);
+                auto sz = SameW::SourceAdjustment(0, 2);
 
                 auto adj = dir.x == 0 ? DifferentW::SourceAdjustmentY(dir.y) : DifferentW::SourceAdjustmentX(dir.x);
                 size_t domain_index_from;
@@ -441,6 +441,15 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
         cudaGraphInstantiate(&cuda_graphs_.search_xpay, graph, 0);
         cudaGraphDestroy(graph);
     }
+    {
+        auto graph = CreateSyncOrthogonal(&cuda_buffers_);
+        cudaGraphInstantiate(&cuda_graphs_.sync_auxiliary, graph, 0);
+        cudaGraphDestroy(graph);
+    }
+
+    // TODO: sync coefficients and sync preconditioner
+    // SyncGridValues(&SimulationDomain::coefficients_);
+    // SyncGridValues(&SimulationDomain::preconditioner_);
 
     for (size_t i = 0; i < domains; ++i) {
         cudaMemcpyAsync(cuda_buffers_.coefficients.GetSegment(i),
@@ -465,10 +474,6 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     DebugRandomizeBorderVelocities();
     SetInitialTemperature();
 
-    // TODO: sync coefficients and sync preconditioner
-    // SyncGridValues(&SimulationDomain::coefficients_);
-    // SyncGridValues(&SimulationDomain::preconditioner_);
-
     if (drawGrid) {
         DrawGrid(renderer, true);
     }
@@ -486,6 +491,7 @@ EulerFluidSim::~EulerFluidSim() {
     cudaGraphExecDestroy(cuda_graphs_.pressure_axpy);
     cudaGraphExecDestroy(cuda_graphs_.residual_axpy);
     cudaGraphExecDestroy(cuda_graphs_.search_xpay);
+    cudaGraphExecDestroy(cuda_graphs_.sync_auxiliary);
 
     cublasDestroy(cuda_buffers_.handle);
 
@@ -775,17 +781,10 @@ void EulerFluidSim::PCG() {
     double sigma = GetScalarOutput();
     //SetSigma(sigma);
 
-    SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
-
-    // TODO: auxiliary sync is done on Host side for now
-    for (size_t i = 0; i < domains; ++i) {
-        cudaMemcpyAsync(cuda_buffers_.auxiliary.GetSegment(i),
-                        (*domains_)[i].auxiliary_->flat_data(),
-                        cuda_buffers_.auxiliary.elements * sizeof(double),
-                        cudaMemcpyHostToDevice,
-                        cuda_graphs_.stream);
-    }
+    // TODO: could be synced while waiting for dot_product calculation
+    cudaGraphLaunch(cuda_graphs_.sync_auxiliary, cuda_graphs_.stream);
     cudaStreamSynchronize(cuda_graphs_.stream);
+
     cudaMemcpyAsync(cuda_buffers_.search.ptr,
                     cuda_buffers_.auxiliary.ptr,
                     cuda_buffers_.search.allocation_size,
@@ -807,16 +806,7 @@ void EulerFluidSim::PCG() {
         SetAlpha(alpha);
 
         // TODO: could be synced while waiting for dot_product calculation
-        SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
-
-        // TODO: auxiliary sync is done on Host side for now
-        for (size_t i = 0; i < domains; ++i) {
-            cudaMemcpyAsync(cuda_buffers_.auxiliary.GetSegment(i),
-                            (*domains_)[i].auxiliary_->flat_data(),
-                            cuda_buffers_.auxiliary.elements * sizeof(double),
-                            cudaMemcpyHostToDevice,
-                            cuda_graphs_.stream);
-        }
+        cudaGraphLaunch(cuda_graphs_.sync_auxiliary, cuda_graphs_.stream);
         cudaStreamSynchronize(cuda_graphs_.stream);
 
         cudaGraphLaunch(cuda_graphs_.pressure_axpy, cuda_graphs_.stream);
@@ -837,16 +827,8 @@ void EulerFluidSim::PCG() {
         double sigma_new = GetScalarOutput();
         SetNewSigma(sigma_new);
 
-        // TODO: could be synced while waiting for sigma_new calculation
-        SyncGridValues(&SimulationDomain::auxiliary_, SyncScope::Orthogonal);
-        // TODO: auxiliary sync is done on Host side for now
-        for (size_t i = 0; i < domains; ++i) {
-            cudaMemcpyAsync(cuda_buffers_.auxiliary.GetSegment(i),
-                            (*domains_)[i].auxiliary_->flat_data(),
-                            cuda_buffers_.auxiliary.elements * sizeof(double),
-                            cudaMemcpyHostToDevice,
-                            cuda_graphs_.stream);
-        }
+        // TODO: could be synced while waiting for dot_product calculation
+        cudaGraphLaunch(cuda_graphs_.sync_auxiliary, cuda_graphs_.stream);
 
         double beta = sigma_new / sigma;
         SetBeta(beta);

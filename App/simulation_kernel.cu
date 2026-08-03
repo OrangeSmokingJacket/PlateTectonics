@@ -32,6 +32,11 @@ __device__ uint32_t GridIndex(uint32_t x, uint32_t y, uint32_t z) {
     return domain_dimensions.y * domain_dimensions.z * x + domain_dimensions.z * y + z;
 }
 
+__device__ uint32_t GridIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+    return domain_dimensions.x * domain_dimensions.y * domain_dimensions.z * w +
+           domain_dimensions.y * domain_dimensions.z * x + domain_dimensions.z * y + z;
+}
+
 // Dispatched over real_dimensions
 template <typename T>
 __global__ void ApplyCoefficientsKernel(T* __restrict__ target,
@@ -77,12 +82,6 @@ void CreateApplySparseMatrixGraph(
         d_buffers->auxiliary.GetSegment(domain_index),
         (d_buffers->*d_source).GetSegment(domain_index),
         (d_buffers->*d_coefficients_matrix).GetSegment(domain_index));
-
-    cudaMemcpyAsync(domains[domain_index].auxiliary_->flat_data(),
-                    d_buffers->auxiliary.GetSegment(domain_index),
-                    vec_size,
-                    cudaMemcpyDeviceToHost,
-                    capture_stream);
 
     cudaStreamEndCapture(capture_stream, graph);
     cudaStreamDestroy(capture_stream);
@@ -334,6 +333,195 @@ cudaGraph_t CreateXpYD(CudaDispatchBuffers* d_buffers) {
         <<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->auxiliary.ptr, d_buffers->search.ptr, d_beta_ptr);
 
     cudaStreamEndCapture(capture_stream, &graph);
+
+    return graph;
+}
+
+// For now that array is of a one from euler_fluid_sim.cpp
+// For W neighbours it is cheaper to look it up, than compute
+struct WNeighbour {
+    size_t x_plus;
+    size_t x_minus;
+    size_t y_plus;
+    size_t y_minus;
+};
+// Get neighbouring face in specific direction
+__device__ constexpr WNeighbour w_neighbours[6] = {WNeighbour{1, 4, 2, 5},
+                                                   WNeighbour{2, 5, 0, 3},
+                                                   WNeighbour{0, 3, 1, 4},
+                                                   WNeighbour{4, 1, 5, 2},
+                                                   WNeighbour{5, 2, 3, 0},
+                                                   WNeighbour{3, 0, 4, 1}};
+
+// dispatched over real cells
+template <typename T>
+__global__ void SyncFromXPlus(T* v) {
+    // blockId.x indicates domain
+    // blockID.yz - dispatches over domain face
+    // threadIdx.x = halo plane
+
+    uint32_t index_x = domain_dimensions.x - halo_size.x;
+    uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.x;
+
+    uint32_t n_index_x = index_y;
+    uint32_t n_index_y = domain_dimensions.y - halo_size.y - 1;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].x_plus;
+
+    v[GridIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
+        v[GridIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+}
+template <typename T>
+__global__ void SyncFromXMinus(T* v) {
+    // blockId.x indicates domain
+    // blockID.yz - dispatches over domain face
+    // threadIdx.x = halo plane
+
+    uint32_t index_x = 0;
+    uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.x;
+
+    uint32_t n_index_x = domain_dimensions.x - index_y - 1;
+    uint32_t n_index_y = halo_size.y * 2 - 1;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].x_minus;
+
+    v[GridIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
+        v[GridIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+}
+template <typename T>
+__global__ void SyncFromYPlus(T* v) {
+    // blockId.y indicates domain
+    // blockID.xz - dispatches over domain face
+    // threadIdx.y = halo plane
+
+    uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+    uint32_t index_y = domain_dimensions.y - halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.y;
+
+    uint32_t n_index_x = domain_dimensions.x - halo_size.x * 2;
+    uint32_t n_index_y = index_x;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].y_plus;
+
+    v[GridIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
+        v[GridIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+}
+template <typename T>
+__global__ void SyncFromYMinus(T* v) {
+    // blockId.y indicates domain
+    // blockID.xz - dispatches over domain face
+    // threadIdx.y = halo plane
+
+    uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+    uint32_t index_y = 0;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.y;
+
+    uint32_t n_index_x = halo_size.x * 2 - 1;
+    uint32_t n_index_y = domain_dimensions.y - index_x - 1;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].y_minus;
+
+    v[GridIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
+        v[GridIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+}
+
+cudaGraph_t CreateSyncOrthogonalXPlus(CudaDispatchBuffers* d_buffers) {
+    static constexpr dim3 blocks{6, SimulationDomain::real_dimensions[1] / 8, SimulationDomain::real_dimensions[2] / 8};
+    static constexpr dim3 threads{halo_size.x, 8, 8};
+
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
+
+    SyncFromXPlus<ValueType><<<blocks, threads, 0, capture_stream>>>(d_buffers->auxiliary.ptr);
+
+    cudaStreamEndCapture(capture_stream, &graph);
+
+    return graph;
+}
+
+cudaGraph_t CreateSyncOrthogonalXMinus(CudaDispatchBuffers* d_buffers) {
+    static constexpr dim3 blocks{6, SimulationDomain::real_dimensions[1] / 8, SimulationDomain::real_dimensions[2] / 8};
+    static constexpr dim3 threads{halo_size.x, 8, 8};
+
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
+
+    SyncFromXMinus<ValueType><<<blocks, threads, 0, capture_stream>>>(d_buffers->auxiliary.ptr);
+
+    cudaStreamEndCapture(capture_stream, &graph);
+
+    return graph;
+}
+
+cudaGraph_t CreateSyncOrthogonalYPlus(CudaDispatchBuffers* d_buffers) {
+    static constexpr dim3 blocks{SimulationDomain::real_dimensions[0] / 8, 6, SimulationDomain::real_dimensions[2] / 8};
+    static constexpr dim3 threads{8, halo_size.x, 8};
+
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
+
+    SyncFromYPlus<ValueType><<<blocks, threads, 0, capture_stream>>>(d_buffers->auxiliary.ptr);
+
+    cudaStreamEndCapture(capture_stream, &graph);
+
+    return graph;
+}
+
+cudaGraph_t CreateSyncOrthogonalYMinus(CudaDispatchBuffers* d_buffers) {
+    static constexpr dim3 blocks{SimulationDomain::real_dimensions[0] / 8, 6, SimulationDomain::real_dimensions[2] / 8};
+    static constexpr dim3 threads{8, halo_size.x, 8};
+
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
+
+    SyncFromYMinus<ValueType><<<blocks, threads, 0, capture_stream>>>(d_buffers->auxiliary.ptr);
+
+    cudaStreamEndCapture(capture_stream, &graph);
+
+    return graph;
+}
+
+cudaGraph_t CreateSyncOrthogonal(CudaDispatchBuffers* d_buffers) {
+    static constexpr size_t directions = 4;
+    cudaGraph_t graph;
+    cudaGraphCreate(&graph);
+
+    cudaGraphNode_t nodes[directions];
+
+    {
+        auto child = CreateSyncOrthogonalXPlus(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[0], graph, nullptr, 0, child);
+        cudaGraphDestroy(child);
+    }
+    {
+        auto child = CreateSyncOrthogonalXMinus(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[1], graph, nullptr, 0, child);
+        cudaGraphDestroy(child);
+    }
+    {
+        auto child = CreateSyncOrthogonalYPlus(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[2], graph, nullptr, 0, child);
+        cudaGraphDestroy(child);
+    }
+    {
+        auto child = CreateSyncOrthogonalYMinus(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[3], graph, nullptr, 0, child);
+        cudaGraphDestroy(child);
+    }
 
     return graph;
 }

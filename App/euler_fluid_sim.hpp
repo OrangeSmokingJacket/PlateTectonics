@@ -73,6 +73,7 @@ struct CudaGraphs {
     cudaGraphExec_t pressure_axpy;
     cudaGraphExec_t residual_axpy;
     cudaGraphExec_t search_xpay;
+    cudaGraphExec_t sync_auxiliary;
 };
 
 class EulerFluidSim {

@@ -19,6 +19,8 @@ cudaGraph_t CreateXpYP(CudaDispatchBuffers* d_buffers);
 cudaGraph_t CreateXpYR(CudaDispatchBuffers* d_buffers);
 cudaGraph_t CreateXpYD(CudaDispatchBuffers* d_buffers);
 
+cudaGraph_t CreateSyncOrthogonal(CudaDispatchBuffers* d_buffers);
+
 // Temp H2D and D2H transfers
 double GetScalarOutput();
 
