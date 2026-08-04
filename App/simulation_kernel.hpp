@@ -6,6 +6,7 @@ cudaGraph_t CreateApplyAGraph(CudaDispatchBuffers* d_buffers, SimulationDomain* 
 
 cudaGraph_t CreateApplyMGraph(CudaDispatchBuffers* d_buffers, SimulationDomain* domains);
 
+// TODO: next 4 are leaking!
 cudaGraph_t CreateDotProductR(CudaDispatchBuffers* d_buffers);
 cudaGraph_t CreateDotProductD(CudaDispatchBuffers* d_buffers);
 cudaGraph_t CreateLengthR(CudaDispatchBuffers* d_buffers);

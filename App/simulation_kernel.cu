@@ -136,7 +136,9 @@ cudaGraph_t CreateApplyMGraph(CudaDispatchBuffers* d_buffers, SimulationDomain* 
 
 static constexpr size_t vec_length = EulerFluidSim::total_cells;
 static constexpr size_t dispatch_size = EulerFluidSim::max_pow2_multiple;
+static constexpr size_t reduction_buffer_size = vec_length / dispatch_size;
 static constexpr size_t blocks = vec_length / dispatch_size;
+static constexpr size_t blocks1 = blocks / dispatch_size + (blocks % dispatch_size != 0);
 
 // [0, 1]
 __device__ uint32_t CellReality(uint32_t flat_index) {
@@ -177,7 +179,7 @@ __global__ void RealCellsDotProduct(const T* lhs, const T* rhs, T* result) {
 }
 
 template <typename T, bool IsPower2>
-__global__ void PartialSum(const T* v, T* result) {
+__global__ void PartialSum(const T* v, T* result, size_t vector_length) {
     __shared__ T partial_sum[dispatch_size];
 
     uint32_t vec_pos = blockIdx.x * blockDim.x + threadIdx.x;
@@ -185,19 +187,24 @@ __global__ void PartialSum(const T* v, T* result) {
     if constexpr (IsPower2) {
         partial_sum[threadIdx.x] = v[vec_pos];
     } else {
-        partial_sum[threadIdx.x] = (vec_pos < vec_length) ? v[vec_pos] : T{};
+        partial_sum[threadIdx.x] = (vec_pos < vector_length) ? v[vec_pos] : T{};
     }
     __syncthreads();
 
     Reduction<T>(partial_sum, result);
 }
 
-template <typename T>
-__global__ void AbsMax(const T* v, T* result) {
+template <typename T, bool IsPower2>
+__global__ void AbsMax(const T* v, T* result, size_t vector_length) {
     __shared__ T s_data[dispatch_size];
 
     uint32_t vec_pos = blockIdx.x * blockDim.x + threadIdx.x;
-    s_data[threadIdx.x] = (vec_pos < vec_length) ? v[vec_pos] : T{};
+
+    if constexpr (IsPower2) {
+        s_data[threadIdx.x] = v[vec_pos];
+    } else {
+        s_data[threadIdx.x] = (vec_pos < vector_length) ? v[vec_pos] : T{};
+    }
     __syncthreads();
 
     for (uint32_t stride = 1; stride < blockDim.x; stride *= 2) {
@@ -226,10 +233,12 @@ cudaGraph_t CreateDotProduct(CudaDispatchBuffers* d_buffers,
     RealCellsDotProduct<ValueType><<<blocks, dispatch_size, 0, capture_stream>>>((d_buffers->*lhs_buffer).ptr,
                                                                                  (d_buffers->*rhs_buffer).ptr,
                                                                                  d_buffers->reduction_buffer);
-
-    static_assert(std::bit_ceil(blocks) <= 1024);
+    PartialSum<ValueType, false><<<blocks1, dispatch_size, 0, capture_stream>>>(d_buffers->reduction_buffer,
+                                                                                d_buffers->reduction_buffer,
+                                                                                reduction_buffer_size);
+    static_assert(blocks1 <= dispatch_size);
     PartialSum<ValueType, false>
-        <<<1, std::bit_ceil(blocks), 0, capture_stream>>>(d_buffers->reduction_buffer, d_scalar_output);
+        <<<1, dispatch_size, 0, capture_stream>>>(d_buffers->reduction_buffer, d_scalar_output, reduction_buffer_size);
 
     cudaStreamEndCapture(capture_stream, &graph);
     cudaStreamDestroy(capture_stream);
@@ -270,11 +279,15 @@ cudaGraph_t CreateMaxDivergenceGraph(CudaDispatchBuffers* d_buffers, SimulationD
                         capture_stream);
     }
 
-    AbsMax<ValueType>
-        <<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->divergence.ptr, d_buffers->reduction_buffer);
-
-    static_assert(std::bit_ceil(blocks) <= 1024);
-    AbsMax<ValueType><<<1, std::bit_ceil(blocks), 0, capture_stream>>>(d_buffers->reduction_buffer, d_scalar_output);
+    AbsMax<ValueType, true><<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->divergence.ptr,
+                                                                          d_buffers->reduction_buffer,
+                                                                          vec_length);
+    AbsMax<ValueType, false><<<blocks1, dispatch_size, 0, capture_stream>>>(d_buffers->reduction_buffer,
+                                                                            d_buffers->reduction_buffer,
+                                                                            reduction_buffer_size);
+    static_assert(blocks1 <= dispatch_size);
+    AbsMax<ValueType, false>
+        <<<1, dispatch_size, 0, capture_stream>>>(d_buffers->reduction_buffer, d_scalar_output, reduction_buffer_size);
 
     cudaStreamEndCapture(capture_stream, &graph);
     cudaStreamDestroy(capture_stream);
