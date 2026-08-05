@@ -62,16 +62,10 @@ struct CudaDispatchBuffers {
 };
 struct CudaGraphs {
     cudaStream_t stream;
-    cudaGraphExec_t apply_A;
-    cudaGraphExec_t apply_M;
+
     cudaGraphExec_t max_divergence;
-    cudaGraphExec_t dot_product_r;
-    cudaGraphExec_t dot_product_d;
-    cudaGraphExec_t length_r;
-    cudaGraphExec_t pressure_axpy;
-    cudaGraphExec_t residual_axpy;
-    cudaGraphExec_t search_xpay;
-    cudaGraphExec_t sync_auxiliary;
+    cudaGraphExec_t PCG_PreLoop;
+    cudaGraphExec_t PCG_MainLoop;
 };
 
 class EulerFluidSim {

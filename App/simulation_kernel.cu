@@ -1,22 +1,29 @@
 #include "simulation_kernel.hpp"
 
 // max divergence and dot_product
-__device__ __managed__ double scalar_output = 0.0;
+__device__ __managed__ double d_scalar_output = 0.0;
 __device__ __managed__ double d_sigma = 0.0;
 __device__ __managed__ double d_new_sigma = 0.0;
 __device__ __managed__ double d_alpha = 0.0;
 __device__ __managed__ double d_beta = 0.0;
+__device__ __managed__ double d_total_error = DBL_MAX;
+__device__ __managed__ uint32_t d_loop_iteration = 0;
 
 double GetScalarOutput() {
     double result;
-    cudaMemcpyFromSymbol(&result, scalar_output, sizeof(double));
+    cudaMemcpyFromSymbol(&result, d_scalar_output, sizeof(double));
     return result;
 }
-
-void SetSigma(double val) { cudaMemcpyToSymbol(d_sigma, &val, sizeof(double)); }
-void SetNewSigma(double val) { cudaMemcpyToSymbol(d_new_sigma, &val, sizeof(double)); }
-void SetAlpha(double val) { cudaMemcpyToSymbol(d_alpha, &val, sizeof(double)); }
-void SetBeta(double val) { cudaMemcpyToSymbol(d_beta, &val, sizeof(double)); }
+double GetErrorOutput() {
+    double result;
+    cudaMemcpyFromSymbol(&result, d_total_error, sizeof(double));
+    return result;
+}
+uint32_t GetIterationsOutput() {
+    uint32_t result;
+    cudaMemcpyFromSymbol(&result, d_loop_iteration, sizeof(uint32_t));
+    return result;
+}
 
 constexpr dim3 domain_dimensions{static_cast<uint32_t>(SimulationDomain::dimensions[0]),
                                  static_cast<uint32_t>(SimulationDomain::dimensions[1]),
@@ -66,7 +73,6 @@ static constexpr dim3 grid_dimensions{SimulationDomain::real_dimensions[0] / blo
 void CreateApplySparseMatrixGraph(
     cudaGraph_t* graph,
     CudaDispatchBuffers* d_buffers,
-    SimulationDomain* domains,
     size_t domain_index,
     const CudaDispatchBuffers::SB<CoefficientsValues<double>> CudaDispatchBuffers::* d_coefficients_matrix,
     const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* d_source) {
@@ -85,32 +91,25 @@ void CreateApplySparseMatrixGraph(
     cudaStreamDestroy(capture_stream);
 }
 
-void
-CreateApplyAGraph(cudaGraph_t* graph, CudaDispatchBuffers* d_buffers, SimulationDomain* domains, size_t domain_index) {
+void CreateApplyAGraph(cudaGraph_t* graph, CudaDispatchBuffers* d_buffers, size_t domain_index) {
     CreateApplySparseMatrixGraph(graph,
                                  d_buffers,
-                                 domains,
                                  domain_index,
                                  &CudaDispatchBuffers::coefficients,
                                  &CudaDispatchBuffers::search);
 }
 
-void
-CreateApplyMGraph(cudaGraph_t* graph, CudaDispatchBuffers* d_buffers, SimulationDomain* domains, size_t domain_index) {
+void CreateApplyMGraph(cudaGraph_t* graph, CudaDispatchBuffers* d_buffers, size_t domain_index) {
     CreateApplySparseMatrixGraph(graph,
                                  d_buffers,
-                                 domains,
                                  domain_index,
                                  &CudaDispatchBuffers::preconditioner,
                                  &CudaDispatchBuffers::residual);
 }
 
-cudaGraph_t CreateApplyMatrixGraph(CudaDispatchBuffers* d_buffers,
-                                   SimulationDomain* domains,
-                                   void (*create_func)(cudaGraph_t* graph,
-                                                       CudaDispatchBuffers* d_buffers,
-                                                       SimulationDomain* domains,
-                                                       size_t domain_index)) {
+cudaGraph_t
+CreateApplyMatrixGraph(CudaDispatchBuffers* d_buffers,
+                       void (*create_func)(cudaGraph_t* graph, CudaDispatchBuffers* d_buffers, size_t domain_index)) {
     cudaGraph_t graph;
     cudaGraphCreate(&graph);
 
@@ -118,7 +117,7 @@ cudaGraph_t CreateApplyMatrixGraph(CudaDispatchBuffers* d_buffers,
     cudaGraphNode_t nodes[EulerFluidSim::domains];
 
     for (size_t i = 0; i < EulerFluidSim::domains; ++i) {
-        create_func(&children[i], d_buffers, domains, i);
+        create_func(&children[i], d_buffers, i);
         cudaGraphAddChildGraphNode(&nodes[i], graph, nullptr, 0, children[i]);
         cudaGraphDestroy(children[i]);
     }
@@ -126,12 +125,12 @@ cudaGraph_t CreateApplyMatrixGraph(CudaDispatchBuffers* d_buffers,
     return graph;
 }
 
-cudaGraph_t CreateApplyAGraph(CudaDispatchBuffers* d_buffers, SimulationDomain* domains) {
-    return CreateApplyMatrixGraph(d_buffers, domains, CreateApplyAGraph);
+cudaGraph_t CreateApplyAGraph(CudaDispatchBuffers* d_buffers) {
+    return CreateApplyMatrixGraph(d_buffers, CreateApplyAGraph);
 }
 
-cudaGraph_t CreateApplyMGraph(CudaDispatchBuffers* d_buffers, SimulationDomain* domains) {
-    return CreateApplyMatrixGraph(d_buffers, domains, CreateApplyMGraph);
+cudaGraph_t CreateApplyMGraph(CudaDispatchBuffers* d_buffers) {
+    return CreateApplyMatrixGraph(d_buffers, CreateApplyMGraph);
 }
 
 static constexpr size_t vec_length = EulerFluidSim::total_cells;
@@ -221,10 +220,8 @@ __global__ void AbsMax(const T* v, T* result, size_t vector_length) {
 
 cudaGraph_t CreateDotProduct(CudaDispatchBuffers* d_buffers,
                              const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* lhs_buffer,
-                             const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* rhs_buffer) {
-    double* d_scalar_output = nullptr;
-    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_scalar_output), scalar_output);
-
+                             const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* rhs_buffer,
+                             double* d_scalar_output_ptr) {
     cudaGraph_t graph;
     cudaStream_t capture_stream;
     cudaStreamCreate(&capture_stream);
@@ -237,8 +234,9 @@ cudaGraph_t CreateDotProduct(CudaDispatchBuffers* d_buffers,
                                                                                 d_buffers->reduction_buffer,
                                                                                 reduction_buffer_size);
     static_assert(blocks1 <= dispatch_size);
-    PartialSum<ValueType, false>
-        <<<1, dispatch_size, 0, capture_stream>>>(d_buffers->reduction_buffer, d_scalar_output, reduction_buffer_size);
+    PartialSum<ValueType, false><<<1, dispatch_size, 0, capture_stream>>>(d_buffers->reduction_buffer,
+                                                                          d_scalar_output_ptr,
+                                                                          reduction_buffer_size);
 
     cudaStreamEndCapture(capture_stream, &graph);
     cudaStreamDestroy(capture_stream);
@@ -247,13 +245,28 @@ cudaGraph_t CreateDotProduct(CudaDispatchBuffers* d_buffers,
 }
 
 cudaGraph_t CreateDotProductR(CudaDispatchBuffers* d_buffers) {
-    return CreateDotProduct(d_buffers, &CudaDispatchBuffers::auxiliary, &CudaDispatchBuffers::residual);
+    double* d_new_sigma_ptr = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_new_sigma_ptr), d_new_sigma);
+    return CreateDotProduct(d_buffers,
+                            &CudaDispatchBuffers::auxiliary,
+                            &CudaDispatchBuffers::residual,
+                            d_new_sigma_ptr);
 }
 cudaGraph_t CreateDotProductD(CudaDispatchBuffers* d_buffers) {
-    return CreateDotProduct(d_buffers, &CudaDispatchBuffers::auxiliary, &CudaDispatchBuffers::search);
+    double* d_scalar_output_ptr = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_scalar_output_ptr), d_scalar_output);
+    return CreateDotProduct(d_buffers,
+                            &CudaDispatchBuffers::auxiliary,
+                            &CudaDispatchBuffers::search,
+                            d_scalar_output_ptr);
 }
 cudaGraph_t CreateLengthR(CudaDispatchBuffers* d_buffers) {
-    return CreateDotProduct(d_buffers, &CudaDispatchBuffers::residual, &CudaDispatchBuffers::residual);
+    double* d_total_error_ptr = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_total_error_ptr), d_total_error);
+    return CreateDotProduct(d_buffers,
+                            &CudaDispatchBuffers::residual,
+                            &CudaDispatchBuffers::residual,
+                            d_total_error_ptr);
 }
 
 template <typename T>
@@ -261,23 +274,14 @@ __global__ void ExtractVectorValue(const T* vector, const int* index, T* value) 
     *value = vector[*index - 1];
 }
 
-cudaGraph_t CreateMaxDivergenceGraph(CudaDispatchBuffers* d_buffers, SimulationDomain* domains) {
-    static constexpr size_t vec_size = elements * sizeof(ValueType);
-    double* d_scalar_output = nullptr;
-    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_scalar_output), scalar_output);
+cudaGraph_t CreateMaxDivergenceGraph(CudaDispatchBuffers* d_buffers) {
+    double* d_scalar_output_ptr = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_scalar_output_ptr), d_scalar_output);
 
     cudaGraph_t graph;
     cudaStream_t capture_stream;
     cudaStreamCreate(&capture_stream);
     cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
-
-    for (size_t i = 0; i < SimulationConstants::domains; ++i) {
-        cudaMemcpyAsync(d_buffers->divergence.GetSegment(i),
-                        domains[i].cell_pressure_divergence_->flat_data(),
-                        vec_size,
-                        cudaMemcpyHostToDevice,
-                        capture_stream);
-    }
 
     AbsMax<ValueType, true><<<blocks, dispatch_size, 0, capture_stream>>>(d_buffers->divergence.ptr,
                                                                           d_buffers->reduction_buffer,
@@ -286,8 +290,9 @@ cudaGraph_t CreateMaxDivergenceGraph(CudaDispatchBuffers* d_buffers, SimulationD
                                                                             d_buffers->reduction_buffer,
                                                                             reduction_buffer_size);
     static_assert(blocks1 <= dispatch_size);
-    AbsMax<ValueType, false>
-        <<<1, dispatch_size, 0, capture_stream>>>(d_buffers->reduction_buffer, d_scalar_output, reduction_buffer_size);
+    AbsMax<ValueType, false><<<1, dispatch_size, 0, capture_stream>>>(d_buffers->reduction_buffer,
+                                                                      d_scalar_output_ptr,
+                                                                      reduction_buffer_size);
 
     cudaStreamEndCapture(capture_stream, &graph);
     cudaStreamDestroy(capture_stream);
@@ -555,5 +560,298 @@ cudaGraph_t CreateSyncOrthogonal(CudaDispatchBuffers* d_buffers) {
         cudaGraphDestroy(child);
     }
 
+    return graph;
+}
+
+template <typename T>
+__global__ void DivideScalars(const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ res_out) {
+    *res_out = *a / *b;
+}
+
+cudaGraph_t CreateCalculateAlpha() {
+    double* d_alpha_ptr = nullptr;
+    double* d_sigma_ptr = nullptr;
+    double* d_scalar_output_ptr = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_alpha_ptr), d_alpha);
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_sigma_ptr), d_sigma);
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_scalar_output_ptr), d_scalar_output);
+
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
+
+    DivideScalars<ValueType><<<1, 1, 0, capture_stream>>>(d_sigma_ptr, d_scalar_output_ptr, d_alpha_ptr);
+
+    cudaStreamEndCapture(capture_stream, &graph);
+    cudaStreamDestroy(capture_stream);
+
+    return graph;
+}
+
+cudaGraph_t CreateCalculateBeta() {
+    double* d_beta_ptr = nullptr;
+    double* d_new_sigma_ptr = nullptr;
+    double* d_sigma_ptr = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_beta_ptr), d_beta);
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_new_sigma_ptr), d_new_sigma);
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_sigma_ptr), d_sigma);
+
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
+
+    DivideScalars<ValueType><<<1, 1, 0, capture_stream>>>(d_new_sigma_ptr, d_sigma_ptr, d_beta_ptr);
+
+    cudaStreamEndCapture(capture_stream, &graph);
+    cudaStreamDestroy(capture_stream);
+
+    return graph;
+}
+
+cudaGraph_t CreateUpdateSigma() {
+    double* d_new_sigma_ptr = nullptr;
+    double* d_sigma_ptr = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_new_sigma_ptr), d_new_sigma);
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_sigma_ptr), d_sigma);
+
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
+
+    cudaMemcpyAsync(d_sigma_ptr, d_new_sigma_ptr, sizeof(double), cudaMemcpyDeviceToDevice, capture_stream);
+
+    cudaStreamEndCapture(capture_stream, &graph);
+    cudaStreamDestroy(capture_stream);
+
+    return graph;
+}
+
+cudaGraph_t CreatePCG_PreLoop(CudaDispatchBuffers* d_buffers) {
+    cudaGraph_t pre_loop_part;
+    cudaGraphCreate(&pre_loop_part);
+    cudaGraphNode_t nodes[5];
+
+    {
+        auto apply_M = CreateApplyMGraph(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[0], pre_loop_part, nullptr, 0, apply_M);
+        cudaGraphDestroy(apply_M);
+
+        auto sync_halos = CreateSyncOrthogonal(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[1], pre_loop_part, &nodes[0], 1, sync_halos);
+        cudaGraphDestroy(sync_halos);
+
+        auto aux_residual_dot_product = CreateDotProductR(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[2], pre_loop_part, &nodes[0], 1, aux_residual_dot_product);
+        cudaGraphDestroy(aux_residual_dot_product);
+
+        auto update_sigma = CreateUpdateSigma();
+        // depends on setting beta and halo sync
+        cudaGraphAddChildGraphNode(&nodes[3], pre_loop_part, &nodes[2], 1, update_sigma);
+        cudaGraphDestroy(update_sigma);
+
+        cudaGraphAddMemcpyNode1D(&nodes[4],
+                                 pre_loop_part,
+                                 &nodes[1],
+                                 1,
+                                 d_buffers->search.ptr,
+                                 d_buffers->auxiliary.ptr,
+                                 d_buffers->search.allocation_size,
+                                 cudaMemcpyDeviceToDevice);
+    }
+
+    return pre_loop_part;
+}
+
+cudaGraph_t CreatePCG_MainLoop_Upper(CudaDispatchBuffers* d_buffers) {
+    cudaGraph_t loop_upper_part;
+    cudaGraphCreate(&loop_upper_part);
+    cudaGraphNode_t nodes[7];
+
+    {
+        auto apply_A = CreateApplyAGraph(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[0], loop_upper_part, nullptr, 0, apply_A);
+        cudaGraphDestroy(apply_A);
+
+        auto sync_halos = CreateSyncOrthogonal(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[1], loop_upper_part, &nodes[0], 1, sync_halos);
+        cudaGraphDestroy(sync_halos);
+
+        auto aux_search_dot_product = CreateDotProductD(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[3], loop_upper_part, &nodes[0], 1, aux_search_dot_product);
+        cudaGraphDestroy(aux_search_dot_product);
+
+        auto set_alpha = CreateCalculateAlpha();
+        cudaGraphAddChildGraphNode(&nodes[2], loop_upper_part, &nodes[3], 1, set_alpha);
+        cudaGraphDestroy(set_alpha);
+
+        auto search_pressure_AXpY = CreateXpYP(d_buffers);
+        // depends on setting alpha
+        cudaGraphAddChildGraphNode(&nodes[4], loop_upper_part, &nodes[2], 1, search_pressure_AXpY);
+        cudaGraphDestroy(search_pressure_AXpY);
+
+        auto auxiliary_residual_AXpY = CreateXpYR(d_buffers);
+        // depends on setting alpha and halo sync
+        cudaGraphAddChildGraphNode(&nodes[5], loop_upper_part, &nodes[1], 2, auxiliary_residual_AXpY);
+        cudaGraphDestroy(auxiliary_residual_AXpY);
+
+        auto residual_length = CreateLengthR(d_buffers);
+        // depends on aux-res update
+        cudaGraphAddChildGraphNode(&nodes[6], loop_upper_part, &nodes[5], 1, residual_length);
+        cudaGraphDestroy(residual_length);
+    }
+
+    return loop_upper_part;
+}
+
+cudaGraph_t CreatePCG_MainLoop_Lower(CudaDispatchBuffers* d_buffers) {
+    cudaGraph_t loop_lower_part;
+    cudaGraphCreate(&loop_lower_part);
+    cudaGraphNode_t nodes[6];
+
+    {
+        auto apply_M = CreateApplyMGraph(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[0], loop_lower_part, nullptr, 0, apply_M);
+        cudaGraphDestroy(apply_M);
+
+        auto sync_halos = CreateSyncOrthogonal(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[1], loop_lower_part, &nodes[0], 1, sync_halos);
+        cudaGraphDestroy(sync_halos);
+
+        auto aux_residual_dot_product = CreateDotProductR(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[3], loop_lower_part, &nodes[0], 1, aux_residual_dot_product);
+        cudaGraphDestroy(aux_residual_dot_product);
+
+        auto set_beta = CreateCalculateBeta();
+        cudaGraphAddChildGraphNode(&nodes[2], loop_lower_part, &nodes[3], 1, set_beta);
+        cudaGraphDestroy(set_beta);
+
+        auto auxiliary_search_XpAY = CreateXpYD(d_buffers);
+        // depends on setting beta and halo sync
+        cudaGraphAddChildGraphNode(&nodes[4], loop_lower_part, &nodes[1], 2, auxiliary_search_XpAY);
+        cudaGraphDestroy(auxiliary_search_XpAY);
+
+        auto update_sigma = CreateUpdateSigma();
+        // depends on setting beta and halo sync
+        cudaGraphAddChildGraphNode(&nodes[5], loop_lower_part, &nodes[2], 1, update_sigma);
+        cudaGraphDestroy(update_sigma);
+    }
+
+    return loop_lower_part;
+}
+
+__global__ void InitLoopKernel(uint32_t* counter, double* error) {
+    *counter = 0;
+    *error = DBL_MAX;
+}
+
+__global__ void LoopKernel(cudaGraphConditionalHandle handle, uint32_t* counter, const double* error) {
+    bool expr =
+        ++(*counter) <= SimulationConstants::max_solver_iterations && (*error) > SimulationConstants::solver_tolerance;
+    cudaGraphSetConditional(handle, expr);
+}
+
+__global__ void EarlyLoopExitKernel(cudaGraphConditionalHandle handle, const double* error) {
+    bool expr = (*error) > SimulationConstants::solver_tolerance;
+    cudaGraphSetConditional(handle, expr);
+}
+
+cudaGraph_t CreatePCG_MainLoop(CudaDispatchBuffers* d_buffers) {
+    uint32_t* d_loop_iteration_ptr = nullptr;
+    double* d_total_error_ptr = nullptr;
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_loop_iteration_ptr), d_loop_iteration);
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_total_error_ptr), d_total_error);
+
+    cudaGraph_t graph;
+    cudaGraphCreate(&graph);
+    cudaGraphNode_t nodes[8];
+
+    // initialize loop variables
+    {
+        cudaGraphNodeParams init_loop_params{cudaGraphNodeTypeKernel};
+        void* init_loop_args[2];
+        init_loop_args[0] = &d_loop_iteration_ptr;
+        init_loop_args[1] = &d_total_error_ptr;
+        init_loop_params.kernel.func = InitLoopKernel;
+        init_loop_params.kernel.kernelParams = init_loop_args;
+        init_loop_params.kernel.gridDim = dim3(1);
+        init_loop_params.kernel.blockDim = dim3(1);
+        cudaGraphAddNode(&nodes[0], graph, nullptr, nullptr, 0, &init_loop_params);
+    }
+
+    cudaGraphConditionalHandle loop_handle;
+    cudaGraphConditionalHandleCreate(&loop_handle, graph);
+
+    // set conditional
+    {
+        cudaGraphNodeParams eval_conditional_params{cudaGraphNodeTypeKernel};
+        void* loop_args[3];
+        loop_args[0] = &loop_handle;
+        loop_args[1] = &d_loop_iteration_ptr;
+        loop_args[2] = &d_total_error_ptr;
+        eval_conditional_params.kernel.func = LoopKernel;
+        eval_conditional_params.kernel.kernelParams = loop_args;
+        eval_conditional_params.kernel.gridDim = dim3(1);
+        eval_conditional_params.kernel.blockDim = dim3(1);
+        cudaGraphAddNode(&nodes[1], graph, &nodes[0], nullptr, 1, &eval_conditional_params);
+    }
+
+    cudaGraphNodeParams loop_params{cudaGraphNodeTypeConditional};
+    loop_params.conditional.handle = loop_handle;
+    loop_params.conditional.type = cudaGraphCondTypeWhile;
+    loop_params.conditional.size = 1;
+    cudaGraphAddNode(&nodes[2], graph, &nodes[1], nullptr, 1, &loop_params);
+
+    cudaGraph_t loop_body = loop_params.conditional.phGraph_out[0];
+    {
+        auto loop_upper = CreatePCG_MainLoop_Upper(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[3], loop_body, nullptr, 0, loop_upper);
+        cudaGraphDestroy(loop_upper);
+
+        cudaGraphConditionalHandle early_exit_handle;
+        cudaGraphConditionalHandleCreate(&early_exit_handle, loop_body);
+
+        // set conditional
+        {
+            cudaGraphNodeParams eval_conditional_params{cudaGraphNodeTypeKernel};
+            void* early_exit_args[2];
+            early_exit_args[0] = &early_exit_handle;
+            early_exit_args[1] = &d_total_error_ptr;
+            eval_conditional_params.kernel.func = EarlyLoopExitKernel;
+            eval_conditional_params.kernel.kernelParams = early_exit_args;
+            eval_conditional_params.kernel.gridDim = dim3(1);
+            eval_conditional_params.kernel.blockDim = dim3(1);
+            cudaGraphAddNode(&nodes[4], loop_body, &nodes[3], nullptr, 1, &eval_conditional_params);
+        }
+
+        cudaGraphNodeParams early_exit_params{cudaGraphNodeTypeConditional};
+        early_exit_params.conditional.handle = early_exit_handle;
+        early_exit_params.conditional.type = cudaGraphCondTypeIf;
+        early_exit_params.conditional.size = 1;
+        cudaGraphAddNode(&nodes[5], loop_body, &nodes[4], nullptr, 1, &early_exit_params);
+
+        cudaGraph_t no_exit_body = early_exit_params.conditional.phGraph_out[0];
+        {
+            auto loop_lower = CreatePCG_MainLoop_Lower(d_buffers);
+            cudaGraphAddChildGraphNode(&nodes[6], no_exit_body, nullptr, 0, loop_lower);
+            cudaGraphDestroy(loop_lower);
+        }
+
+        // set conditional inside a loop
+        {
+            cudaGraphNodeParams eval_conditional_params{cudaGraphNodeTypeKernel};
+            void* loop_args[3];
+            loop_args[0] = &loop_handle;
+            loop_args[1] = &d_loop_iteration_ptr;
+            loop_args[2] = &d_total_error_ptr;
+            eval_conditional_params.kernel.func = LoopKernel;
+            eval_conditional_params.kernel.kernelParams = loop_args;
+            eval_conditional_params.kernel.gridDim = dim3(1);
+            eval_conditional_params.kernel.blockDim = dim3(1);
+            cudaGraphAddNode(&nodes[7], loop_body, &nodes[5], nullptr, 1, &eval_conditional_params);
+        }
+    }
     return graph;
 }

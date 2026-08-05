@@ -389,53 +389,18 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     cudaStreamCreateWithFlags(&cuda_graphs_.stream, cudaStreamNonBlocking);
 
     {
-        auto graph = CreateApplyAGraph(&cuda_buffers_, domains_->data());
-        cudaGraphInstantiate(&cuda_graphs_.apply_A, graph, 0);
-        cudaGraphDestroy(graph);
-    }
-    {
-        auto graph = CreateApplyMGraph(&cuda_buffers_, domains_->data());
-        cudaGraphInstantiate(&cuda_graphs_.apply_M, graph, 0);
-        cudaGraphDestroy(graph);
-    }
-    {
-        auto graph = CreateMaxDivergenceGraph(&cuda_buffers_, domains_->data());
+        auto graph = CreateMaxDivergenceGraph(&cuda_buffers_);
         cudaGraphInstantiate(&cuda_graphs_.max_divergence, graph, 0);
         cudaGraphDestroy(graph);
     }
     {
-        auto graph = CreateDotProductR(&cuda_buffers_);
-        cudaGraphInstantiate(&cuda_graphs_.dot_product_r, graph, 0);
+        auto graph = CreatePCG_PreLoop(&cuda_buffers_);
+        cudaGraphInstantiate(&cuda_graphs_.PCG_PreLoop, graph, 0);
         cudaGraphDestroy(graph);
     }
     {
-        auto graph = CreateDotProductD(&cuda_buffers_);
-        cudaGraphInstantiate(&cuda_graphs_.dot_product_d, graph, 0);
-        cudaGraphDestroy(graph);
-    }
-    {
-        auto graph = CreateLengthR(&cuda_buffers_);
-        cudaGraphInstantiate(&cuda_graphs_.length_r, graph, 0);
-        cudaGraphDestroy(graph);
-    }
-    {
-        auto graph = CreateXpYP(&cuda_buffers_);
-        cudaGraphInstantiate(&cuda_graphs_.pressure_axpy, graph, 0);
-        cudaGraphDestroy(graph);
-    }
-    {
-        auto graph = CreateXpYR(&cuda_buffers_);
-        cudaGraphInstantiate(&cuda_graphs_.residual_axpy, graph, 0);
-        cudaGraphDestroy(graph);
-    }
-    {
-        auto graph = CreateXpYD(&cuda_buffers_);
-        cudaGraphInstantiate(&cuda_graphs_.search_xpay, graph, 0);
-        cudaGraphDestroy(graph);
-    }
-    {
-        auto graph = CreateSyncOrthogonal(&cuda_buffers_);
-        cudaGraphInstantiate(&cuda_graphs_.sync_auxiliary, graph, 0);
+        auto graph = CreatePCG_MainLoop(&cuda_buffers_);
+        cudaGraphInstantiate(&cuda_graphs_.PCG_MainLoop, graph, 0);
         cudaGraphDestroy(graph);
     }
 
@@ -474,16 +439,9 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
 }
 
 EulerFluidSim::~EulerFluidSim() {
-    cudaGraphExecDestroy(cuda_graphs_.apply_A);
-    cudaGraphExecDestroy(cuda_graphs_.apply_M);
     cudaGraphExecDestroy(cuda_graphs_.max_divergence);
-    cudaGraphExecDestroy(cuda_graphs_.dot_product_r);
-    cudaGraphExecDestroy(cuda_graphs_.dot_product_d);
-    cudaGraphExecDestroy(cuda_graphs_.length_r);
-    cudaGraphExecDestroy(cuda_graphs_.pressure_axpy);
-    cudaGraphExecDestroy(cuda_graphs_.residual_axpy);
-    cudaGraphExecDestroy(cuda_graphs_.search_xpay);
-    cudaGraphExecDestroy(cuda_graphs_.sync_auxiliary);
+    cudaGraphExecDestroy(cuda_graphs_.PCG_PreLoop);
+    cudaGraphExecDestroy(cuda_graphs_.PCG_MainLoop);
 
     for (auto& domain : *domains_) {
         cudaHostUnregister(domain.cell_pressure_->flat_begin());
@@ -744,17 +702,19 @@ void EulerFluidSim::PCG() {
     }
     // TODO: there is pressure divergence accumulation on domain borders, that has to be resolved
     // Having precondition and coefficients local to domain increases iterations by a factor of 2
-    // If divergence is low enough zero pressure will be close enough
-    // It might be faster in some cases to skip this check
 
-    cudaGraphLaunch(cuda_graphs_.max_divergence, cuda_graphs_.stream);
-    cudaStreamSynchronize(cuda_graphs_.stream);
-
-    if (GetScalarOutput() < std::numeric_limits<double>::epsilon())
-        return;
-
-    // TODO: Divergence is updated on Host side for now
-    for (size_t i = 0; i < domains; ++i) {
+    // TODO: Update from host changes
+    for (size_t i = 0; i < SimulationConstants::domains; ++i) {
+        cudaMemcpyAsync(cuda_buffers_.pressure.GetSegment(i),
+                        (*domains_)[i].cell_pressure_->flat_data(),
+                        cuda_buffers_.pressure.elements * sizeof(double),
+                        cudaMemcpyHostToDevice,
+                        cuda_graphs_.stream);
+        cudaMemcpyAsync(cuda_buffers_.divergence.GetSegment(i),
+                        (*domains_)[i].cell_pressure_divergence_->flat_data(),
+                        cuda_buffers_.divergence.elements * sizeof(double),
+                        cudaMemcpyHostToDevice,
+                        cuda_graphs_.stream);
         cudaMemcpyAsync(cuda_buffers_.residual.GetSegment(i),
                         (*domains_)[i].cell_pressure_divergence_->flat_data(),
                         cuda_buffers_.residual.elements * sizeof(double),
@@ -762,76 +722,37 @@ void EulerFluidSim::PCG() {
                         cuda_graphs_.stream);
     }
 
-    cudaGraphLaunch(cuda_graphs_.apply_M, cuda_graphs_.stream);
+    cudaGraphLaunch(cuda_graphs_.max_divergence, cuda_graphs_.stream);
     cudaStreamSynchronize(cuda_graphs_.stream);
 
-    cudaGraphLaunch(cuda_graphs_.dot_product_r, cuda_graphs_.stream);
-    cudaStreamSynchronize(cuda_graphs_.stream);
-    double sigma = GetScalarOutput();
-    //SetSigma(sigma);
+    if (GetScalarOutput() < std::numeric_limits<double>::epsilon())
+        return;
 
-    // TODO: could be synced while waiting for dot_product calculation
-    cudaGraphLaunch(cuda_graphs_.sync_auxiliary, cuda_graphs_.stream);
+    cudaGraphLaunch(cuda_graphs_.PCG_PreLoop, cuda_graphs_.stream);
     cudaStreamSynchronize(cuda_graphs_.stream);
 
-    cudaMemcpyAsync(cuda_buffers_.search.ptr,
-                    cuda_buffers_.auxiliary.ptr,
-                    cuda_buffers_.search.allocation_size,
-                    cudaMemcpyDeviceToDevice,
-                    cuda_graphs_.stream);
+    cudaGraphLaunch(cuda_graphs_.PCG_MainLoop, cuda_graphs_.stream);
     cudaStreamSynchronize(cuda_graphs_.stream);
 
-    for (; last_PCG_iteration_count < SimulationConstants::max_solver_iterations; last_PCG_iteration_count++) {
-        assert(cudaGetLastError() == cudaSuccess);
-        assert(!std::isinf(sigma));
-        assert(!std::isnan(sigma));
+    // Get iteration_count from Device to display
+    last_PCG_iteration_count = GetIterationsOutput();
+    cudaStreamSynchronize(cuda_graphs_.stream);
 
-        cudaGraphLaunch(cuda_graphs_.apply_A, cuda_graphs_.stream);
-        cudaStreamSynchronize(cuda_graphs_.stream);
-
-        cudaGraphLaunch(cuda_graphs_.dot_product_d, cuda_graphs_.stream);
-        cudaStreamSynchronize(cuda_graphs_.stream);
-        double alpha = sigma / GetScalarOutput();
-        SetAlpha(alpha);
-
-        // TODO: could be synced while waiting for dot_product calculation
-        cudaGraphLaunch(cuda_graphs_.sync_auxiliary, cuda_graphs_.stream);
-        cudaStreamSynchronize(cuda_graphs_.stream);
-
-        cudaGraphLaunch(cuda_graphs_.pressure_axpy, cuda_graphs_.stream);
-        cudaGraphLaunch(cuda_graphs_.residual_axpy, cuda_graphs_.stream);
-        cudaGraphLaunch(cuda_graphs_.length_r, cuda_graphs_.stream);
-        cudaStreamSynchronize(cuda_graphs_.stream);
-
-        double total_error = GetScalarOutput();
-
-        if (total_error < SimulationConstants::solver_tolerance)
-            break;
-
-        cudaGraphLaunch(cuda_graphs_.apply_M, cuda_graphs_.stream);
-        cudaStreamSynchronize(cuda_graphs_.stream);
-
-        cudaGraphLaunch(cuda_graphs_.dot_product_r, cuda_graphs_.stream);
-        cudaStreamSynchronize(cuda_graphs_.stream);
-        double sigma_new = GetScalarOutput();
-        SetNewSigma(sigma_new);
-
-        // TODO: could be synced while waiting for dot_product calculation
-        cudaGraphLaunch(cuda_graphs_.sync_auxiliary, cuda_graphs_.stream);
-
-        double beta = sigma_new / sigma;
-        SetBeta(beta);
-        cudaStreamSynchronize(cuda_graphs_.stream);
-
-        cudaGraphLaunch(cuda_graphs_.search_xpay, cuda_graphs_.stream);
-        cudaStreamSynchronize(cuda_graphs_.stream);
-
-        //assert(sigma_new < sigma);
-        sigma = sigma_new;
-        SetSigma(sigma);
+    {
+        auto err = cudaGetLastError();
+        assert(err == cudaSuccess);
     }
+
+    for (size_t i = 0; i < domains; ++i) {
+        cudaMemcpyAsync((*domains_)[i].cell_pressure_->flat_data(),
+                        cuda_buffers_.pressure.GetSegment(i),
+                        cuda_buffers_.pressure.elements * sizeof(double),
+                        cudaMemcpyDeviceToHost,
+                        cuda_graphs_.stream);
+    }
+
+    cudaStreamSynchronize(cuda_graphs_.stream);
     SyncGridValues(&SimulationDomain::cell_pressure_);
-    // TODO: Log used iterations properly
 }
 
 void EulerFluidSim::ProjectVelocities() {
