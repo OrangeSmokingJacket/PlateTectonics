@@ -30,7 +30,7 @@ namespace utils {
         std::array<std::jthread, PoolSize> workers_;
     };
 
-    using DefaultThreadPool = ThreadPool<8>;
+    using DefaultThreadPool = ThreadPool<6>;
 
     template <size_t PoolSize>
     ThreadPool<PoolSize>::ThreadPool()

@@ -1,19 +1,27 @@
 cmake_minimum_required(VERSION 3.25)
-project(PlateTectonics)
+project(PlateTectonics LANGUAGES C CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(CMAKE_CUDA_STANDARD 20)
+set(CMAKE_CUDA_STANDARD_REQUIRED YES)
+
 option(ENABLE_ASAN "use address sanitizer" OFF)
+
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES native)
+endif()
+
 
 if (ENABLE_ASAN)
     if (MSVC)
-        add_compile_options(/fsanitize=address)
-        add_link_options(/fsanitize=address)
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/fsanitize=address>)
+        add_link_options($<$<COMPILE_LANGUAGE:CXX>:/fsanitize=address>)
     else ()
-        add_compile_options(-fsanitize=address)
-        add_link_options(-fsanitize=address)
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address>)
+        add_link_options($<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address>)
     endif()
     message("Address sanitizer is enabled")
 else ()
@@ -22,6 +30,7 @@ endif()
 
 include(FetchContent)
 find_package(OpenGL REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 
 FetchContent_Declare(
         glfw
@@ -66,7 +75,18 @@ add_subdirectory(Math)
 add_subdirectory(Core)
 add_subdirectory(Utils)
 
-add_executable(${PROJECT_NAME} main.cpp App/app_layer.cpp App/simulation_domain.cpp App/euler_fluid_sim.cpp)
+add_executable(${PROJECT_NAME}
+        main.cpp
+
+        App/app_layer.cpp
+        App/simulation_domain.cpp
+        App/euler_fluid_sim.cpp
+        App/simulation_kernel.cu
+)
+
+set_target_properties(${PROJECT_NAME} PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
         imgui_lib
@@ -78,6 +98,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         asset_loader
         cereal::cereal
 
+        CUDA::cudart
+
         camera_component
         mesh_renderer_component
         scriptable_component
@@ -86,18 +108,22 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 # TODO: warnings only for this project
 if (MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE
-        /Wall
-        /permissive-
+        $<$<COMPILE_LANGUAGE:CXX>:/Wall>
+        $<$<COMPILE_LANGUAGE:CXX>:/permissive->
 
-        /diagnostics:caret
-        /external:W0
-        /external:anglebrackets
+        $<$<COMPILE_LANGUAGE:CXX>:/diagnostics:caret>
+        $<$<COMPILE_LANGUAGE:CXX>:/external:W0>
+        $<$<COMPILE_LANGUAGE:CXX>:/external:anglebrackets>
+        $<$<COMPILE_LANGUAGE:CUDA>:-rdc=true>
+        $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
     )
 else()
     target_compile_options(${PROJECT_NAME} PRIVATE
-        -Wall
-        -Wextra
+        $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+        $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
 
-        -fconcepts-diagnostics-depth=10
+        $<$<COMPILE_LANGUAGE:CXX>:-fconcepts-diagnostics-depth=10>
+        $<$<COMPILE_LANGUAGE:CUDA>:-rdc=true>
+        $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
     )
 endif()

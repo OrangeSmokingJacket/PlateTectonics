@@ -92,8 +92,8 @@ void main() {
     // bring to [0,1] range
     // texture includes halo cells, so actual range has to be smaller
     // regular_grid_coords.xy is in range: [-adjusted_radius; adjusted_radius]
-    // regular_grid_coords.z is in range: [cell_size * ; cell_size * (face_dimensions.z + halo.z * 2)]
-    vec3 uv_coords = (regular_grid_coords + vec3(adjusted_radius, adjusted_radius, cell_size)) /
+    // regular_grid_coords.z is in range: [cell_size * halo.z; cell_size * (face_dimensions.z + halo.z * 2)]
+    vec3 uv_coords = (regular_grid_coords + vec3(adjusted_radius, adjusted_radius, cell_size * float(halo.z))) /
                      vec3(adjusted_radius * 2.0f, adjusted_radius * 2.0f, cell_size * (face_dimensions.z + float(halo.z * 2)));
 
     color = texture(sample_textures[face_index], uv_coords);

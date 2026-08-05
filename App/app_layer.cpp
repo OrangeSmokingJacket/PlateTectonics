@@ -184,7 +184,7 @@ void MainLayer::Render() {
         // TODO: adjust plain offset with user inputs
         pipeline_.BindSlice(mantle_sim_.RenderTextures(),
                             mantle_sim_.max_temperature_color,
-                            static_cast<math::vec3<uint32_t>>(EulerFluidSim::real_face_dimensions),
+                            static_cast<math::vec3<uint32_t>>(SimulationDomain::real_dimensions),
                             static_cast<math::vec3<uint32_t>>(SimulationDomain::halo_size),
                             SimulationConstants::scale,
                             resolution,

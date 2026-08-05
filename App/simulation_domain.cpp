@@ -1,7 +1,7 @@
 #include "simulation_domain.hpp"
 #include "euler_fluid_sim.hpp"
 
-SimulationDomain::SimulationDomain(Index4D domain_index)
+SimulationDomain::SimulationDomain(size_t face_index)
     : cell_pressure_(std::make_unique<GridValues>())
     , cell_temperature_(std::make_unique<GridValues>())
     , cell_temperature_temp_(std::make_unique<GridValues>())
@@ -17,7 +17,7 @@ SimulationDomain::SimulationDomain(Index4D domain_index)
     , residual_(std::make_unique<GridValues>())
     , auxiliary_(std::make_unique<GridValues>())
     , search_(std::make_unique<GridValues>())
-    , domain_index_(domain_index) {
+    , face_index_(face_index) {
     cell_pressure_->SetToZero();
     coefficients_->SetToZero();
     preconditioner_->SetToZero();
@@ -60,17 +60,13 @@ void SimulationDomain::CalculateCoefficients() {
 
     for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
-                if (EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z))) {
-                    continue;
-                }
-
+            for (size_t z = border_size; z < dimensions.z - border_size; ++z) {
                 static constexpr int flowPosX = 1;
                 static constexpr int flowNegX = 1;
                 static constexpr int flowPosY = 1;
                 static constexpr int flowNegY = 1;
-                int flowPosZ = !EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z + 1));
-                int flowNegZ = !EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z - 1));
+                int flowPosZ = !EulerFluidSim::IsSolidCell(z + 1);
+                int flowNegZ = !EulerFluidSim::IsSolidCell(z - 1);
 
                 int flowSum = flowPosX + flowNegX + flowPosY + flowNegY + flowPosZ + flowNegZ;
 
@@ -92,11 +88,7 @@ void SimulationDomain::CalculateCoefficients() {
 void SimulationDomain::CalculatePreconditioner() {
     for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
-                if (EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z))) {
-                    continue;
-                }
-
+            for (size_t z = border_size; z < dimensions.z - border_size; ++z) {
                 Mplusx(x, y, z) = (Aplusx(x, y, z) != 0.0) ? -Aplusx(x, y, z) / Adiag(x, y, z) : 0.0;
                 Mplusy(x, y, z) = (Aplusy(x, y, z) != 0.0) ? -Aplusy(x, y, z) / Adiag(x, y, z) : 0.0;
                 Mplusz(x, y, z) = (Aplusz(x, y, z) != 0.0) ? -Aplusz(x, y, z) / Adiag(x, y, z) : 0.0;
@@ -115,13 +107,13 @@ void SimulationDomain::CalculatePreconditioner() {
 void SimulationDomain::CalculateDivergence() {
     for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
+            for (size_t z = border_size; z < dimensions.z - border_size; ++z) {
                 static constexpr int flowPosX = 1;
                 static constexpr int flowNegX = 1;
                 static constexpr int flowPosY = 1;
                 static constexpr int flowNegY = 1;
-                int flowPosZ = !EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z + 1));
-                int flowNegZ = !EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z - 1));
+                int flowPosZ = !EulerFluidSim::IsSolidCell(z + 1);
+                int flowNegZ = !EulerFluidSim::IsSolidCell(z - 1);
 
                 double velocityX_POS = (*velocities_x_)[x + 1][y][z] * flowPosX;
                 double velocityX_NEG = (*velocities_x_)[x][y][z] * flowNegX;
@@ -141,39 +133,14 @@ void SimulationDomain::CalculateDivergence() {
     }
 }
 
-void SimulationDomain::ApplyCoefficients() {
-    for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
-        for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
-                aux(x, y, z) = Adiag(x, y, z) * search(x, y, z) + Aplusx(x - 1, y, z) * search(x - 1, y, z) +
-                               Aplusx(x, y, z) * search(x + 1, y, z) + Aplusy(x, y - 1, z) * search(x, y - 1, z) +
-                               Aplusy(x, y, z) * search(x, y + 1, z) + Aplusz(x, y, z - 1) * search(x, y, z - 1) +
-                               Aplusz(x, y, z) * search(x, y, z + 1);
-            }
-        }
-    }
-}
-
-void SimulationDomain::ApplyPreconditioner() {
-    for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
-        for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
-                aux(x, y, z) = Mdiag(x, y, z) * residual(x, y, z) + Mplusx(x - 1, y, z) * residual(x - 1, y, z) +
-                               Mplusx(x, y, z) * residual(x + 1, y, z) + Mplusy(x, y - 1, z) * residual(x, y - 1, z) +
-                               Mplusy(x, y, z) * residual(x, y + 1, z) + Mplusz(x, y, z - 1) * residual(x, y, z - 1) +
-                               Mplusz(x, y, z) * residual(x, y, z + 1);
-            }
-        }
-    }
-}
-
 void SimulationDomain::UpdateVelocities() {
-    const double k = SimulationConstants::fixed_time_step / (SimulationConstants::density * SimulationConstants::scale);
+    static constexpr double k =
+        SimulationConstants::fixed_time_step / (SimulationConstants::density * SimulationConstants::scale);
 
     for (uint64_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
         for (uint64_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (uint64_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
-                if (EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z))) {
+            for (uint64_t z = 0; z < dimensions.z; ++z) {
+                if (EulerFluidSim::IsSolidCell(z)) {
                     (*velocities_x_)[x][y][z] = 0;
                     (*velocities_x_)[x + 1][y][z] = 0;
                     (*velocities_y_)[x][y][z] = 0;
@@ -184,7 +151,7 @@ void SimulationDomain::UpdateVelocities() {
                 }
                 (*velocities_x_)[x + 1][y][z] -= k * ((*cell_pressure_)[x + 1][y][z] - (*cell_pressure_)[x][y][z]);
                 (*velocities_y_)[x][y + 1][z] -= k * ((*cell_pressure_)[x][y + 1][z] - (*cell_pressure_)[x][y][z]);
-                if (!EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z + 1))) {
+                if (!EulerFluidSim::IsSolidCell(z + 1)) {
                     (*velocities_z_)[x][y][z + 1] -= k * ((*cell_pressure_)[x][y][z + 1] - (*cell_pressure_)[x][y][z]);
                 }
             }
@@ -200,8 +167,7 @@ void SimulationDomain::ApplyBuoyancy(const EulerFluidSim* simulation) {
 
     for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = halo_size.z; z < dimensions.z - halo_size.z - 1; ++z) {
-                // TODO: account for non-existent halo cells
+            for (size_t z = 0; z < dimensions.z - border_size; ++z) {
                 double localTemperature =
                     ((*cell_temperature_)[x - 1][y][z] + (*cell_temperature_)[x + 1][y][z] +
                      (*cell_temperature_)[x][y - 1][z] + (*cell_temperature_)[x][y + 1][z] +
@@ -226,11 +192,7 @@ void SimulationDomain::AdvectVelocities() {
     // x
     for (size_t x = halo_size.x; x < velocities_x_->size_X - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < velocities_x_->size_Y - halo_size.y; ++y) {
-            for (size_t z = halo_size.z; z < velocities_x_->size_Z - halo_size.z; ++z) {
-                // solid cells have solid neighbours in x/y directions
-                if (EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z)))
-                    continue;
-
+            for (size_t z = border_size; z < velocities_x_->size_Z - border_size; ++z) {
                 nPos = math::vec3<float>{static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)} +
                        VelocityXGridOffset;
                 math::vec3<float> velocity = SampleVelocity(nPos);
@@ -251,11 +213,7 @@ void SimulationDomain::AdvectVelocities() {
     // y
     for (size_t x = halo_size.x; x < velocities_y_->size_X - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < velocities_y_->size_Y - halo_size.y; ++y) {
-            for (size_t z = halo_size.z; z < velocities_y_->size_Z - halo_size.z; ++z) {
-                // solid cells have solid neighbours in x/y directions
-                if (EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z)))
-                    continue;
-
+            for (size_t z = border_size; z < velocities_y_->size_Z - border_size; ++z) {
                 nPos = math::vec3<float>{static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)} +
                        VelocityYGridOffset;
                 math::vec3<float> velocity = SampleVelocity(nPos);
@@ -270,11 +228,7 @@ void SimulationDomain::AdvectVelocities() {
     // z
     for (size_t x = halo_size.x; x < velocities_z_->size_X - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < velocities_z_->size_Y - halo_size.y; ++y) {
-            for (size_t z = halo_size.z; z < velocities_z_->size_Z - halo_size.z; ++z) {
-                if (EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z - 1)) ||
-                    EulerFluidSim::IsSolidCell(WorldIndex<2>(domain_index_.z, z)))
-                    continue;
-
+            for (size_t z = border_size; z < velocities_z_->size_Z - border_size; ++z) {
                 nPos = math::vec3<float>{static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)} +
                        VelocityZGridOffset;
                 math::vec3<float> velocity = SampleVelocity(nPos);
@@ -299,7 +253,7 @@ void SimulationDomain::AdvectTemperature() {
     math::vec3<float> nPos;
     for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
         for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
+            for (size_t z = border_size; z < dimensions.z - border_size; ++z) {
                 nPos = math::vec3<float>{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} +
                        ValueGridOffset;
                 math::vec3<float> velocity = SampleVelocity(nPos);
@@ -313,20 +267,6 @@ void SimulationDomain::AdvectTemperature() {
     }
 
     std::swap(cell_temperature_, cell_temperature_temp_);
-}
-
-MinMax SimulationDomain::DivergenceMinMax() const {
-    double minDivergence = std::numeric_limits<double>::max();
-    double maxDivergence = std::numeric_limits<double>::lowest();
-    for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
-        for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
-                minDivergence = std::min(minDivergence, (*cell_pressure_divergence_)[x][y][z]);
-                maxDivergence = std::max(maxDivergence, (*cell_pressure_divergence_)[x][y][z]);
-            }
-        }
-    }
-    return {minDivergence, maxDivergence};
 }
 
 math::vec3<float> SimulationDomain::NormalizePosition(const math::vec3<float>& pos) const {
@@ -344,22 +284,4 @@ math::vec3<float> SimulationDomain::SampleVelocity(const math::vec3<float>& nPos
     result.y = Interpolation(velocities_y_.get(), nPos - VelocityYGridOffset, SimulationConstants::interpolation_type);
     result.z = Interpolation(velocities_z_.get(), nPos - VelocityZGridOffset, SimulationConstants::interpolation_type);
     return result;
-}
-
-double SimulationDomain::RealCellsDotProduct(std::unique_ptr<GridValues> SimulationDomain::* lhs,
-                                             std::unique_ptr<GridValues> SimulationDomain::* rhs) const {
-    double result = 0.0;
-    // skip halo cells, because they are either border or belong to another domain
-    for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
-        for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = halo_size.z; z < dimensions.z - halo_size.z; ++z) {
-                result += (*(this->*lhs))[x][y][z] * (*(this->*rhs))[x][y][z];
-            }
-        }
-    }
-    return result;
-}
-
-double SimulationDomain::RealCellsLength(std::unique_ptr<GridValues> SimulationDomain::* input) const {
-    return std::sqrt(RealCellsDotProduct(input, input));
 }

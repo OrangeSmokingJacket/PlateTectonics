@@ -7,6 +7,7 @@
 #include <Core/Engine/Assets/Texture/texture.hpp>
 #include <Math/math_def.hpp>
 #include <Utils/thread_pool.hpp>
+#include <cuda_runtime.h>
 
 #include <cmath>
 #include <memory>
@@ -24,31 +25,66 @@ namespace SimulationConstants {
     static constexpr double solver_tolerance = 1.0e-6;
     static constexpr uint32_t max_solver_iterations = 100;
     static constexpr InterpolationType interpolation_type = InterpolationType::Trilinear;
+    static constexpr size_t domains = 6;
 } // namespace SimulationConstants
 
 // Not all operations read diagonal values, so they could be skipped
 enum class SyncScope : uint8_t { Orthogonal, Full };
 
+// assume that there is no padding needed between them
+template <typename T, size_t Elements, size_t Segments>
+struct SegmentedBuffer {
+    using value_t = T;
+    static constexpr size_t elements = Elements;
+    static constexpr size_t segments = Segments;
+    static constexpr size_t allocation_size = sizeof(T) * elements * segments;
+
+    T* ptr;
+
+    T* GetSegment(size_t index) const {
+        assert(index < segments);
+        return ptr + elements * index;
+    }
+};
+
+struct CudaDispatchBuffers {
+    template <typename T>
+    using SB = SegmentedBuffer<T, Cardinality(SimulationDomain::dimensions), SimulationConstants::domains>;
+
+    double* reduction_buffer;
+    SB<double> pressure;
+    SB<double> divergence;
+    SB<double> auxiliary;
+    SB<double> residual;
+    SB<double> search;
+    SB<CoefficientsValues<double>> coefficients;
+    SB<CoefficientsValues<double>> preconditioner;
+};
+struct CudaGraphs {
+    cudaStream_t stream;
+
+    cudaGraphExec_t PCG_Solver;
+};
+
 class EulerFluidSim {
     friend SimulationDomain;
 
 public:
-    // Dimensions
-    // In vec4 for values are stored xyzw
-    // Domains organized in storage wxyz
-    static constexpr Index4D domains{2, 2, 2, 6};
-    static constexpr Dimensions real_face_dimensions =
-        SimulationDomain::real_dimensions * static_cast<Index3D>(domains);
-    static constexpr Dimensions full_dimensions = real_face_dimensions + 2ull * SimulationDomain::halo_size;
+    // 1 domain per face
+    static constexpr size_t domains = SimulationConstants::domains;
     static constexpr math::vec3<float> world_origin_offset{
-        -(real_face_dimensions[0] * SimulationConstants::scale * 0.5f),
-        -(real_face_dimensions[1] * SimulationConstants::scale * 0.5f),
+        -(SimulationDomain::real_dimensions[0] * SimulationConstants::scale * 0.5f),
+        -(SimulationDomain::real_dimensions[1] * SimulationConstants::scale * 0.5f),
         // x and y are equal, but we have to pick one
-        real_face_dimensions[0] * SimulationConstants::scale * 0.5f};
+        SimulationDomain::real_dimensions[0] * SimulationConstants::scale * 0.5f};
     static constexpr float inner_sphere_radius = world_origin_offset[2];
+    static constexpr size_t total_cells = domains * Cardinality(SimulationDomain::dimensions);
+    // max safe 2^N, where total_cells % (2^N) == 0
+    static constexpr size_t max_pow2_multiple = 64;
 
     // Temp render ptr to draw grid
     explicit EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThreadPool* thread_pool);
+    ~EulerFluidSim();
     void Update(float delta_time);
     void RenderDebug(Core::RenderPipeline* renderer) const;
     void SetupRenderTexture();
@@ -58,7 +94,7 @@ public:
 
 private:
     static constexpr bool IsSolidCell(size_t world_index_z) {
-        return world_index_z == 0 || world_index_z + 1 >= full_dimensions.z;
+        return world_index_z == 0 || world_index_z + 1 >= SimulationDomain::dimensions.z;
     }
     void SyncVelocitiesZ();
     void SyncVelocities();
@@ -111,10 +147,12 @@ public:
     Core::Engine::Assets::Color max_divergence_color = Core::Engine::Assets::Colors::Cyan;
 
 private:
+    CudaDispatchBuffers cuda_buffers_;
+    CudaGraphs cuda_graphs_;
     utils::DefaultThreadPool* thread_pool_;
     // Calculation related data
     // per cell values are allocated on the heap
-    std::unique_ptr<std::array<SimulationDomain, Cardinality(domains)>> domains_;
+    std::unique_ptr<std::array<SimulationDomain, domains>> domains_;
 
     // Actual values
     double crust_temperature_ = 0;      // K
@@ -133,10 +171,8 @@ private:
     Core::Engine::Assets::SColor interpolated_velocity_color_ = Core::Engine::Assets::SColors::Cyan;
 };
 
-static_assert(EulerFluidSim::domains[0] == EulerFluidSim::domains[1] && "domains.x and .y always has to be the same");
 static_assert(SimulationDomain::dimensions[0] == SimulationDomain::dimensions[1] &&
               "dimensions.x and .y always has to be the same");
-static_assert(EulerFluidSim::domains[3] == 6 && "domains.w always has to be 6. It represents a cube face");
 static_assert(SimulationDomain::halo_size[0] == SimulationDomain::halo_size[1] &&
               "Due to x/y interweaving halos have to match in that direction");
 
@@ -144,10 +180,4 @@ template <size_t AxisIndex>
 constexpr size_t WorldIndex(size_t domain_index, size_t cell_index) {
     return domain_index * (SimulationDomain::dimensions[AxisIndex] - 2 * SimulationDomain::halo_size[AxisIndex]) +
            cell_index;
-}
-
-constexpr Index3D WorldIndex(const Index3D& domain_index, const Index3D& cell_index) {
-    return Index3D{WorldIndex<0>(domain_index[0], cell_index[0]),
-                   WorldIndex<1>(domain_index[1], cell_index[1]),
-                   WorldIndex<2>(domain_index[2], cell_index[2])};
 }

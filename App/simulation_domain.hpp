@@ -8,6 +8,7 @@ struct Array3D : public std::array<std::array<std::array<T, Z>, Y>, X> {
     static constexpr size_t size_Y = Y;
     static constexpr size_t size_Z = Z;
     static constexpr size_t cardinality = X * Y * Z;
+    static constexpr size_t memory_footprint = cardinality * sizeof(T);
     using value_type = T;
     using flat_iterator = T*;
     using flat_const_iterator = const T*;
@@ -54,12 +55,21 @@ struct MinMax {
 
 class EulerFluidSim;
 
-// TODO: unique_ptr dereference const is quite noticeable now
+// TODO: unique_ptr dereference cost is quite noticeable now
 struct SimulationDomain {
     // TODO: dimensions up to 64 or higher to minimize halo cells memory usage
     // [] is used because of constexpr and that array is initialized by the constructor
-    static constexpr Dimensions real_dimensions{4, 4, 4};
-    static constexpr Dimensions halo_size{1, 1, 1};
+    static constexpr Dimensions real_dimensions{8, 8, 8};
+
+    static_assert(real_dimensions[0] % 8 == 0 &&
+                  "Real Domain Dimensions should be multiples of 8 for easy GPU dispatch");
+    static_assert(real_dimensions[1] % 8 == 0 &&
+                  "Real Domain Dimensions should be multiples of 8 for easy GPU dispatch");
+    static_assert(real_dimensions[2] % 8 == 0 &&
+                  "Real Domain Dimensions should be multiples of 8 for easy GPU dispatch");
+
+    static constexpr Dimensions halo_size{1, 1, 0};
+    static constexpr size_t border_size = 1;
     static constexpr Dimensions dimensions = real_dimensions + 2ull * halo_size;
     static constexpr Dimensions velocitiesXDimensions{dimensions[0] + 1, dimensions[1], dimensions[2]};
     static constexpr Dimensions velocitiesYDimensions{dimensions[0], dimensions[1] + 1, dimensions[2]};
@@ -71,23 +81,16 @@ struct SimulationDomain {
     using GridYValues = Array3D<double, velocitiesYDimensions[0], velocitiesYDimensions[1], velocitiesYDimensions[2]>;
     using GridZValues = Array3D<double, velocitiesZDimensions[0], velocitiesZDimensions[1], velocitiesZDimensions[2]>;
 
-    explicit SimulationDomain(Index4D domain_index);
+    explicit SimulationDomain(size_t face_index);
     void CalculateCoefficients();
     void CalculatePreconditioner();
     void CalculateDivergence();
-    void ApplyCoefficients();
-    void ApplyPreconditioner();
     void UpdateVelocities();
     void ApplyBuoyancy(const EulerFluidSim* simulation);
     void AdvectVelocities();
     void AdvectTemperature();
 
-    [[nodiscard]] MinMax DivergenceMinMax() const;
     [[nodiscard]] math::vec3<float> SampleVelocity(const math::vec3<float>& nPos) const;
-
-    [[nodiscard]] double RealCellsDotProduct(std::unique_ptr<GridValues> SimulationDomain::* lhs,
-                                             std::unique_ptr<GridValues> SimulationDomain::* rhs) const;
-    [[nodiscard]] double RealCellsLength(std::unique_ptr<GridValues> SimulationDomain::* input) const;
 
     [[nodiscard]] math::vec3<float> NormalizePosition(const math::vec3<float>& pos) const;    // TODO: make constexpr
     [[nodiscard]] math::vec3<float> DenormalizePosition(const math::vec3<float>& nPos) const; // TODO: make constexpr
@@ -104,8 +107,7 @@ struct SimulationDomain {
     std::unique_ptr<GridValues> auxiliary_;
     std::unique_ptr<GridValues> search_;
 
-    // TODO: make it vec4 for cube-sphere
-    Index4D domain_index_;
+    size_t face_index_;
 };
 
 static const math::vec3<float> ValueGridOffset{0.5, 0.5, 0.5};
