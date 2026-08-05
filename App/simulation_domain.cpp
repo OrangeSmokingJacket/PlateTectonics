@@ -269,20 +269,6 @@ void SimulationDomain::AdvectTemperature() {
     std::swap(cell_temperature_, cell_temperature_temp_);
 }
 
-MinMax SimulationDomain::DivergenceMinMax() const {
-    double minDivergence = std::numeric_limits<double>::max();
-    double maxDivergence = std::numeric_limits<double>::lowest();
-    for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
-        for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = border_size; z < dimensions.z - border_size; ++z) {
-                minDivergence = std::min(minDivergence, (*cell_pressure_divergence_)[x][y][z]);
-                maxDivergence = std::max(maxDivergence, (*cell_pressure_divergence_)[x][y][z]);
-            }
-        }
-    }
-    return {minDivergence, maxDivergence};
-}
-
 math::vec3<float> SimulationDomain::NormalizePosition(const math::vec3<float>& pos) const {
     return pos / SimulationConstants::scale;
 }
@@ -298,22 +284,4 @@ math::vec3<float> SimulationDomain::SampleVelocity(const math::vec3<float>& nPos
     result.y = Interpolation(velocities_y_.get(), nPos - VelocityYGridOffset, SimulationConstants::interpolation_type);
     result.z = Interpolation(velocities_z_.get(), nPos - VelocityZGridOffset, SimulationConstants::interpolation_type);
     return result;
-}
-
-double SimulationDomain::RealCellsDotProduct(std::unique_ptr<GridValues> SimulationDomain::* lhs,
-                                             std::unique_ptr<GridValues> SimulationDomain::* rhs) const {
-    double result = 0.0;
-    // skip halo cells, because they are either border or belong to another domain
-    for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
-        for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = 0; z < dimensions.z; ++z) {
-                result += (*(this->*lhs))[x][y][z] * (*(this->*rhs))[x][y][z];
-            }
-        }
-    }
-    return result;
-}
-
-double SimulationDomain::RealCellsLength(std::unique_ptr<GridValues> SimulationDomain::* input) const {
-    return std::sqrt(RealCellsDotProduct(input, input));
 }

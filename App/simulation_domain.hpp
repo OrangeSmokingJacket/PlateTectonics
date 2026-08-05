@@ -90,12 +90,7 @@ struct SimulationDomain {
     void AdvectVelocities();
     void AdvectTemperature();
 
-    [[nodiscard]] MinMax DivergenceMinMax() const;
     [[nodiscard]] math::vec3<float> SampleVelocity(const math::vec3<float>& nPos) const;
-
-    [[nodiscard]] double RealCellsDotProduct(std::unique_ptr<GridValues> SimulationDomain::* lhs,
-                                             std::unique_ptr<GridValues> SimulationDomain::* rhs) const;
-    [[nodiscard]] double RealCellsLength(std::unique_ptr<GridValues> SimulationDomain::* input) const;
 
     [[nodiscard]] math::vec3<float> NormalizePosition(const math::vec3<float>& pos) const;    // TODO: make constexpr
     [[nodiscard]] math::vec3<float> DenormalizePosition(const math::vec3<float>& nPos) const; // TODO: make constexpr
