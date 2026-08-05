@@ -63,9 +63,7 @@ struct CudaDispatchBuffers {
 struct CudaGraphs {
     cudaStream_t stream;
 
-    cudaGraphExec_t max_divergence;
-    cudaGraphExec_t PCG_PreLoop;
-    cudaGraphExec_t PCG_MainLoop;
+    cudaGraphExec_t PCG_Solver;
 };
 
 class EulerFluidSim {

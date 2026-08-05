@@ -758,15 +758,22 @@ __global__ void EarlyLoopExitKernel(cudaGraphConditionalHandle handle, const dou
     cudaGraphSetConditional(handle, expr);
 }
 
-cudaGraph_t CreatePCG_MainLoop(CudaDispatchBuffers* d_buffers) {
+__global__ void SolverActivationKernel(cudaGraphConditionalHandle handle, const double* max_divergence) {
+    bool expr = (*max_divergence) > DBL_EPSILON;
+    cudaGraphSetConditional(handle, expr);
+}
+
+cudaGraph_t CreatePCG_Solver(CudaDispatchBuffers* d_buffers) {
     uint32_t* d_loop_iteration_ptr = nullptr;
     double* d_total_error_ptr = nullptr;
+    double* d_max_divergence_ptr = nullptr;
     cudaGetSymbolAddress(reinterpret_cast<void**>(&d_loop_iteration_ptr), d_loop_iteration);
     cudaGetSymbolAddress(reinterpret_cast<void**>(&d_total_error_ptr), d_total_error);
+    cudaGetSymbolAddress(reinterpret_cast<void**>(&d_max_divergence_ptr), d_scalar_output);
 
     cudaGraph_t graph;
     cudaGraphCreate(&graph);
-    cudaGraphNode_t nodes[8];
+    cudaGraphNode_t nodes[12];
 
     // initialize loop variables
     {
@@ -780,9 +787,44 @@ cudaGraph_t CreatePCG_MainLoop(CudaDispatchBuffers* d_buffers) {
         init_loop_params.kernel.blockDim = dim3(1);
         cudaGraphAddNode(&nodes[0], graph, nullptr, nullptr, 0, &init_loop_params);
     }
+    {
+        auto max_divergence = CreateMaxDivergenceGraph(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[1], graph, nullptr, 0, max_divergence);
+        cudaGraphDestroy(max_divergence);
+    }
+
+    cudaGraphConditionalHandle solver_handle;
+    cudaGraphConditionalHandleCreate(&solver_handle, graph);
+
+    // set_conditional
+    {
+        cudaGraphNodeParams eval_conditional_params{cudaGraphNodeTypeKernel};
+        void* solver_args[2];
+        solver_args[0] = &solver_handle;
+        solver_args[1] = &d_max_divergence_ptr;
+        eval_conditional_params.kernel.func = SolverActivationKernel;
+        eval_conditional_params.kernel.kernelParams = solver_args;
+        eval_conditional_params.kernel.gridDim = dim3(1);
+        eval_conditional_params.kernel.blockDim = dim3(1);
+        cudaGraphAddNode(&nodes[2], graph, &nodes[0], nullptr, 2, &eval_conditional_params);
+    }
+
+    cudaGraphNodeParams solver_params{cudaGraphNodeTypeConditional};
+    solver_params.conditional.handle = solver_handle;
+    solver_params.conditional.type = cudaGraphCondTypeIf;
+    solver_params.conditional.size = 1;
+    cudaGraphAddNode(&nodes[3], graph, &nodes[2], nullptr, 1, &solver_params);
+
+    cudaGraph_t solver_body = solver_params.conditional.phGraph_out[0];
 
     cudaGraphConditionalHandle loop_handle;
-    cudaGraphConditionalHandleCreate(&loop_handle, graph);
+    cudaGraphConditionalHandleCreate(&loop_handle, solver_body);
+
+    {
+        auto pre_loop = CreatePCG_PreLoop(d_buffers);
+        cudaGraphAddChildGraphNode(&nodes[4], solver_body, nullptr, 0, pre_loop);
+        cudaGraphDestroy(pre_loop);
+    }
 
     // set conditional
     {
@@ -795,19 +837,19 @@ cudaGraph_t CreatePCG_MainLoop(CudaDispatchBuffers* d_buffers) {
         eval_conditional_params.kernel.kernelParams = loop_args;
         eval_conditional_params.kernel.gridDim = dim3(1);
         eval_conditional_params.kernel.blockDim = dim3(1);
-        cudaGraphAddNode(&nodes[1], graph, &nodes[0], nullptr, 1, &eval_conditional_params);
+        cudaGraphAddNode(&nodes[5], solver_body, &nodes[4], nullptr, 1, &eval_conditional_params);
     }
 
     cudaGraphNodeParams loop_params{cudaGraphNodeTypeConditional};
     loop_params.conditional.handle = loop_handle;
     loop_params.conditional.type = cudaGraphCondTypeWhile;
     loop_params.conditional.size = 1;
-    cudaGraphAddNode(&nodes[2], graph, &nodes[1], nullptr, 1, &loop_params);
+    cudaGraphAddNode(&nodes[6], solver_body, &nodes[5], nullptr, 1, &loop_params);
 
     cudaGraph_t loop_body = loop_params.conditional.phGraph_out[0];
     {
         auto loop_upper = CreatePCG_MainLoop_Upper(d_buffers);
-        cudaGraphAddChildGraphNode(&nodes[3], loop_body, nullptr, 0, loop_upper);
+        cudaGraphAddChildGraphNode(&nodes[7], loop_body, nullptr, 0, loop_upper);
         cudaGraphDestroy(loop_upper);
 
         cudaGraphConditionalHandle early_exit_handle;
@@ -823,19 +865,19 @@ cudaGraph_t CreatePCG_MainLoop(CudaDispatchBuffers* d_buffers) {
             eval_conditional_params.kernel.kernelParams = early_exit_args;
             eval_conditional_params.kernel.gridDim = dim3(1);
             eval_conditional_params.kernel.blockDim = dim3(1);
-            cudaGraphAddNode(&nodes[4], loop_body, &nodes[3], nullptr, 1, &eval_conditional_params);
+            cudaGraphAddNode(&nodes[8], loop_body, &nodes[7], nullptr, 1, &eval_conditional_params);
         }
 
         cudaGraphNodeParams early_exit_params{cudaGraphNodeTypeConditional};
         early_exit_params.conditional.handle = early_exit_handle;
         early_exit_params.conditional.type = cudaGraphCondTypeIf;
         early_exit_params.conditional.size = 1;
-        cudaGraphAddNode(&nodes[5], loop_body, &nodes[4], nullptr, 1, &early_exit_params);
+        cudaGraphAddNode(&nodes[9], loop_body, &nodes[8], nullptr, 1, &early_exit_params);
 
         cudaGraph_t no_exit_body = early_exit_params.conditional.phGraph_out[0];
         {
             auto loop_lower = CreatePCG_MainLoop_Lower(d_buffers);
-            cudaGraphAddChildGraphNode(&nodes[6], no_exit_body, nullptr, 0, loop_lower);
+            cudaGraphAddChildGraphNode(&nodes[10], no_exit_body, nullptr, 0, loop_lower);
             cudaGraphDestroy(loop_lower);
         }
 
@@ -850,8 +892,9 @@ cudaGraph_t CreatePCG_MainLoop(CudaDispatchBuffers* d_buffers) {
             eval_conditional_params.kernel.kernelParams = loop_args;
             eval_conditional_params.kernel.gridDim = dim3(1);
             eval_conditional_params.kernel.blockDim = dim3(1);
-            cudaGraphAddNode(&nodes[7], loop_body, &nodes[5], nullptr, 1, &eval_conditional_params);
+            cudaGraphAddNode(&nodes[11], loop_body, &nodes[9], nullptr, 1, &eval_conditional_params);
         }
     }
+
     return graph;
 }

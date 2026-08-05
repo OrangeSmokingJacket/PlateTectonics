@@ -389,18 +389,8 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     cudaStreamCreateWithFlags(&cuda_graphs_.stream, cudaStreamNonBlocking);
 
     {
-        auto graph = CreateMaxDivergenceGraph(&cuda_buffers_);
-        cudaGraphInstantiate(&cuda_graphs_.max_divergence, graph, 0);
-        cudaGraphDestroy(graph);
-    }
-    {
-        auto graph = CreatePCG_PreLoop(&cuda_buffers_);
-        cudaGraphInstantiate(&cuda_graphs_.PCG_PreLoop, graph, 0);
-        cudaGraphDestroy(graph);
-    }
-    {
-        auto graph = CreatePCG_MainLoop(&cuda_buffers_);
-        cudaGraphInstantiate(&cuda_graphs_.PCG_MainLoop, graph, 0);
+        auto graph = CreatePCG_Solver(&cuda_buffers_);
+        cudaGraphInstantiate(&cuda_graphs_.PCG_Solver, graph, 0);
         cudaGraphDestroy(graph);
     }
 
@@ -439,9 +429,7 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
 }
 
 EulerFluidSim::~EulerFluidSim() {
-    cudaGraphExecDestroy(cuda_graphs_.max_divergence);
-    cudaGraphExecDestroy(cuda_graphs_.PCG_PreLoop);
-    cudaGraphExecDestroy(cuda_graphs_.PCG_MainLoop);
+    cudaGraphExecDestroy(cuda_graphs_.PCG_Solver);
 
     for (auto& domain : *domains_) {
         cudaHostUnregister(domain.cell_pressure_->flat_begin());
@@ -722,16 +710,7 @@ void EulerFluidSim::PCG() {
                         cuda_graphs_.stream);
     }
 
-    cudaGraphLaunch(cuda_graphs_.max_divergence, cuda_graphs_.stream);
-    cudaStreamSynchronize(cuda_graphs_.stream);
-
-    if (GetScalarOutput() < std::numeric_limits<double>::epsilon())
-        return;
-
-    cudaGraphLaunch(cuda_graphs_.PCG_PreLoop, cuda_graphs_.stream);
-    cudaStreamSynchronize(cuda_graphs_.stream);
-
-    cudaGraphLaunch(cuda_graphs_.PCG_MainLoop, cuda_graphs_.stream);
+    cudaGraphLaunch(cuda_graphs_.PCG_Solver, cuda_graphs_.stream);
     cudaStreamSynchronize(cuda_graphs_.stream);
 
     // Get iteration_count from Device to display
