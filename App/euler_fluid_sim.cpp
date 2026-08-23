@@ -360,6 +360,18 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     cudaMalloc(&cuda_buffers_.search.ptr, cuda_buffers_.search.allocation_size);
     cudaMalloc(&cuda_buffers_.coefficients.ptr, cuda_buffers_.coefficients.allocation_size);
     cudaMalloc(&cuda_buffers_.preconditioner.ptr, cuda_buffers_.preconditioner.allocation_size);
+    cudaMalloc(&cuda_buffers_.velocities_x.b1, cuda_buffers_.velocities_x.allocation_size);
+    cudaMalloc(&cuda_buffers_.velocities_x.b2, cuda_buffers_.velocities_x.allocation_size);
+    cuda_buffers_.velocities_x.front_buffer = &cuda_buffers_.velocities_x.b1;
+    cuda_buffers_.velocities_x.back_buffer = &cuda_buffers_.velocities_x.b2;
+    cudaMalloc(&cuda_buffers_.velocities_y.b1, cuda_buffers_.velocities_y.allocation_size);
+    cudaMalloc(&cuda_buffers_.velocities_y.b2, cuda_buffers_.velocities_y.allocation_size);
+    cuda_buffers_.velocities_y.front_buffer = &cuda_buffers_.velocities_y.b1;
+    cuda_buffers_.velocities_y.back_buffer = &cuda_buffers_.velocities_y.b2;
+    cudaMalloc(&cuda_buffers_.velocities_z.b1, cuda_buffers_.velocities_z.allocation_size);
+    cudaMalloc(&cuda_buffers_.velocities_z.b2, cuda_buffers_.velocities_z.allocation_size);
+    cuda_buffers_.velocities_z.front_buffer = &cuda_buffers_.velocities_z.b1;
+    cuda_buffers_.velocities_z.back_buffer = &cuda_buffers_.velocities_z.b2;
 
     for (auto& domain : *domains_) {
         cudaHostRegister(domain.cell_pressure_->flat_begin(),
@@ -384,10 +396,46 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
         cudaHostRegister(domain.preconditioner_->flat_begin(),
                          SimulationDomain::GridCoefficientsValues::memory_footprint,
                          cudaHostRegisterDefault);
+        // Pin both regular and temp, since they are swapped every frame
+        cudaHostRegister(domain.velocities_x_->flat_begin(),
+                         SimulationDomain::GridXValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        cudaHostRegister(domain.velocities_y_->flat_begin(),
+                         SimulationDomain::GridYValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        cudaHostRegister(domain.velocities_z_->flat_begin(),
+                         SimulationDomain::GridZValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        cudaHostRegister(domain.velocities_x_temp_->flat_begin(),
+                         SimulationDomain::GridXValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        cudaHostRegister(domain.velocities_y_temp_->flat_begin(),
+                         SimulationDomain::GridYValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        cudaHostRegister(domain.velocities_z_temp_->flat_begin(),
+                         SimulationDomain::GridZValues::memory_footprint,
+                         cudaHostRegisterDefault);
     }
+
+    SetVelocityDevicePointers(cuda_buffers_.velocities_x.b1,
+                              cuda_buffers_.velocities_x.b2,
+                              cuda_buffers_.velocities_y.b1,
+                              cuda_buffers_.velocities_y.b2,
+                              cuda_buffers_.velocities_z.b1,
+                              cuda_buffers_.velocities_z.b2);
 
     cudaStreamCreateWithFlags(&cuda_graphs_.stream, cudaStreamNonBlocking);
 
+    {
+        auto graph = CreateCalculateDivergence(&cuda_buffers_);
+        cudaGraphInstantiate(&cuda_graphs_.calculate_divergence, graph, 0);
+        cudaGraphDestroy(graph);
+    }
+    {
+        auto graph = CreateSyncOrthogonal(&cuda_buffers_, &CudaDispatchBuffers::divergence);
+        cudaGraphInstantiate(&cuda_graphs_.sync_divergence, graph, 0);
+        cudaGraphDestroy(graph);
+    }
     {
         auto graph = CreatePCG_Solver(&cuda_buffers_);
         cudaGraphInstantiate(&cuda_graphs_.PCG_Solver, graph, 0);
@@ -429,6 +477,8 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
 }
 
 EulerFluidSim::~EulerFluidSim() {
+    cudaGraphExecDestroy(cuda_graphs_.calculate_divergence);
+    cudaGraphExecDestroy(cuda_graphs_.sync_divergence);
     cudaGraphExecDestroy(cuda_graphs_.PCG_Solver);
 
     for (auto& domain : *domains_) {
@@ -439,6 +489,12 @@ EulerFluidSim::~EulerFluidSim() {
         cudaHostUnregister(domain.search_->flat_begin());
         cudaHostUnregister(domain.coefficients_->flat_begin());
         cudaHostUnregister(domain.preconditioner_->flat_begin());
+        cudaHostUnregister(domain.velocities_x_->flat_begin());
+        cudaHostUnregister(domain.velocities_y_->flat_begin());
+        cudaHostUnregister(domain.velocities_z_->flat_begin());
+        cudaHostUnregister(domain.velocities_x_temp_->flat_begin());
+        cudaHostUnregister(domain.velocities_y_temp_->flat_begin());
+        cudaHostUnregister(domain.velocities_z_temp_->flat_begin());
     }
 
     cudaFree(cuda_buffers_.reduction_buffer);
@@ -449,6 +505,12 @@ EulerFluidSim::~EulerFluidSim() {
     cudaFree(cuda_buffers_.search.ptr);
     cudaFree(cuda_buffers_.coefficients.ptr);
     cudaFree(cuda_buffers_.preconditioner.ptr);
+    cudaFree(cuda_buffers_.velocities_x.b1);
+    cudaFree(cuda_buffers_.velocities_x.b2);
+    cudaFree(cuda_buffers_.velocities_y.b1);
+    cudaFree(cuda_buffers_.velocities_y.b2);
+    cudaFree(cuda_buffers_.velocities_z.b1);
+    cudaFree(cuda_buffers_.velocities_z.b2);
 
     cudaStreamDestroy(cuda_graphs_.stream);
 }
@@ -684,31 +746,8 @@ void EulerFluidSim::SetInitialTemperature() {
 }
 
 void EulerFluidSim::PCG() {
-    last_PCG_iteration_count = 0;
-    for (auto& domain : *domains_) {
-        domain.cell_pressure_->SetToZero();
-    }
     // TODO: there is pressure divergence accumulation on domain borders, that has to be resolved
     // Having precondition and coefficients local to domain increases iterations by a factor of 2
-
-    // TODO: Update from host changes
-    for (size_t i = 0; i < SimulationConstants::domains; ++i) {
-        cudaMemcpyAsync(cuda_buffers_.pressure.GetSegment(i),
-                        (*domains_)[i].cell_pressure_->flat_data(),
-                        cuda_buffers_.pressure.elements * sizeof(double),
-                        cudaMemcpyHostToDevice,
-                        cuda_graphs_.stream);
-        cudaMemcpyAsync(cuda_buffers_.divergence.GetSegment(i),
-                        (*domains_)[i].cell_pressure_divergence_->flat_data(),
-                        cuda_buffers_.divergence.elements * sizeof(double),
-                        cudaMemcpyHostToDevice,
-                        cuda_graphs_.stream);
-        cudaMemcpyAsync(cuda_buffers_.residual.GetSegment(i),
-                        (*domains_)[i].cell_pressure_divergence_->flat_data(),
-                        cuda_buffers_.residual.elements * sizeof(double),
-                        cudaMemcpyHostToDevice,
-                        cuda_graphs_.stream);
-    }
 
     cudaGraphLaunch(cuda_graphs_.PCG_Solver, cuda_graphs_.stream);
     cudaStreamSynchronize(cuda_graphs_.stream);
@@ -735,20 +774,32 @@ void EulerFluidSim::PCG() {
 }
 
 void EulerFluidSim::ProjectVelocities() {
-    {
-        std::latch sync_latch{domains};
-
-        for (size_t i = 0; i < domains; ++i) {
-            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-            thread_pool_->Enqueue([domain_ref, &sync_latch]() {
-                domain_ref.get().CalculateDivergence();
-                sync_latch.count_down();
-            });
-        }
-
-        sync_latch.wait();
+    // Tempt memcpy grom host
+    for (size_t i = 0; i < domains; ++i) {
+        cudaMemcpyAsync(GetVelX() + CudaDispatchBuffers::VxSB<double>::elements_padded * i,
+                        (*domains_)[i].velocities_x_->flat_data(),
+                        SimulationDomain::GridXValues::memory_footprint,
+                        cudaMemcpyHostToDevice,
+                        cuda_graphs_.stream);
+        cudaMemcpyAsync(GetVelY() + CudaDispatchBuffers::VySB<double>::elements_padded * i,
+                        (*domains_)[i].velocities_y_->flat_data(),
+                        SimulationDomain::GridYValues::memory_footprint,
+                        cudaMemcpyHostToDevice,
+                        cuda_graphs_.stream);
+        cudaMemcpyAsync(GetVelZ() + CudaDispatchBuffers::VzSB<double>::elements_padded * i,
+                        (*domains_)[i].velocities_z_->flat_data(),
+                        SimulationDomain::GridZValues::memory_footprint,
+                        cudaMemcpyHostToDevice,
+                        cuda_graphs_.stream);
     }
-    SyncGridValues(&SimulationDomain::cell_pressure_divergence_);
+    cudaStreamSynchronize(cuda_graphs_.stream);
+
+    cudaGraphLaunch(cuda_graphs_.calculate_divergence, cuda_graphs_.stream);
+    cudaStreamSynchronize(cuda_graphs_.stream);
+
+    cudaGraphLaunch(cuda_graphs_.sync_divergence, cuda_graphs_.stream);
+    cudaStreamSynchronize(cuda_graphs_.stream);
+
     PCG();
     {
         std::latch sync_latch{domains};

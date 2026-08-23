@@ -104,35 +104,6 @@ void SimulationDomain::CalculatePreconditioner() {
     }
 }
 
-void SimulationDomain::CalculateDivergence() {
-    for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
-        for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = border_size; z < dimensions.z - border_size; ++z) {
-                static constexpr int flowPosX = 1;
-                static constexpr int flowNegX = 1;
-                static constexpr int flowPosY = 1;
-                static constexpr int flowNegY = 1;
-                int flowPosZ = !EulerFluidSim::IsSolidCell(z + 1);
-                int flowNegZ = !EulerFluidSim::IsSolidCell(z - 1);
-
-                double velocityX_POS = (*velocities_x_)[x + 1][y][z] * flowPosX;
-                double velocityX_NEG = (*velocities_x_)[x][y][z] * flowNegX;
-                double velocityY_POS = (*velocities_y_)[x][y + 1][z] * flowPosY;
-                double velocityY_NEG = (*velocities_y_)[x][y][z] * flowNegY;
-                double velocityZ_POS = (*velocities_z_)[x][y][z + 1] * flowPosZ;
-                double velocityZ_NEG = (*velocities_z_)[x][y][z] * flowNegZ;
-
-                double gradientX = velocityX_POS - velocityX_NEG;
-                double gradientY = velocityY_POS - velocityY_NEG;
-                double gradientZ = velocityZ_POS - velocityZ_NEG;
-
-                (*cell_pressure_divergence_)[x][y][z] =
-                    -(gradientX + gradientY + gradientZ) / SimulationConstants::scale;
-            }
-        }
-    }
-}
-
 void SimulationDomain::UpdateVelocities() {
     static constexpr double k =
         SimulationConstants::fixed_time_step / (SimulationConstants::density * SimulationConstants::scale);

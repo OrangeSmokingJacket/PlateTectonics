@@ -1,6 +1,12 @@
 #include "simulation_kernel.hpp"
 
 // max divergence and dot_product
+__device__ __managed__ double* d_velocity_x = nullptr;
+__device__ __managed__ double* d_velocity_x_temp = nullptr;
+__device__ __managed__ double* d_velocity_y = nullptr;
+__device__ __managed__ double* d_velocity_y_temp = nullptr;
+__device__ __managed__ double* d_velocity_z = nullptr;
+__device__ __managed__ double* d_velocity_z_temp = nullptr;
 __device__ __managed__ double d_scalar_output = 0.0;
 __device__ __managed__ double d_sigma = 0.0;
 __device__ __managed__ double d_new_sigma = 0.0;
@@ -9,6 +15,21 @@ __device__ __managed__ double d_beta = 0.0;
 __device__ __managed__ double d_total_error = DBL_MAX;
 __device__ __managed__ uint32_t d_loop_iteration = 0;
 
+double* GetVelX() {
+    double* result;
+    cudaMemcpyFromSymbol(&result, d_velocity_x, sizeof(double*));
+    return result;
+}
+double* GetVelY() {
+    double* result;
+    cudaMemcpyFromSymbol(&result, d_velocity_y, sizeof(double*));
+    return result;
+}
+double* GetVelZ() {
+    double* result;
+    cudaMemcpyFromSymbol(&result, d_velocity_z, sizeof(double*));
+    return result;
+}
 double GetScalarOutput() {
     double result;
     cudaMemcpyFromSymbol(&result, d_scalar_output, sizeof(double));
@@ -33,8 +54,22 @@ constexpr dim3 halo_size{static_cast<uint32_t>(SimulationDomain::halo_size[0]),
                          static_cast<uint32_t>(SimulationDomain::halo_size[1]),
                          static_cast<uint32_t>(SimulationDomain::halo_size[2])};
 
+constexpr uint32_t z_border_size = SimulationDomain::border_size;
+
 __device__ uint32_t GridIndex(uint32_t x, uint32_t y, uint32_t z) {
     return domain_dimensions.y * domain_dimensions.z * x + domain_dimensions.z * y + z;
+}
+
+__device__ uint32_t StaggeredXGridIndex(uint32_t x, uint32_t y, uint32_t z) {
+    return domain_dimensions.y * domain_dimensions.z * x + domain_dimensions.z * y + z;
+}
+
+__device__ uint32_t StaggeredYGridIndex(uint32_t x, uint32_t y, uint32_t z) {
+    return (domain_dimensions.y + 1) * domain_dimensions.z * x + domain_dimensions.z * y + z;
+}
+
+__device__ uint32_t StaggeredZGridIndex(uint32_t x, uint32_t y, uint32_t z) {
+    return domain_dimensions.y * (domain_dimensions.z + 1) * x + (domain_dimensions.z + 1) * y + z;
 }
 
 __device__ uint32_t GridIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
@@ -464,7 +499,9 @@ __global__ void SyncFromYMinus(T* v) {
         v[GridIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
 }
 
-cudaGraph_t CreateSyncOrthogonalXPlus(CudaDispatchBuffers* d_buffers) {
+template <typename T>
+cudaGraph_t CreateSyncOrthogonalXPlus(CudaDispatchBuffers* d_buffers,
+                                      const CudaDispatchBuffers::SB<T> CudaDispatchBuffers::* grid) {
     static constexpr dim3 blocks{6, SimulationDomain::real_dimensions[1] / 8, SimulationDomain::real_dimensions[2] / 8};
     static constexpr dim3 threads{halo_size.x, 8, 8};
 
@@ -473,7 +510,7 @@ cudaGraph_t CreateSyncOrthogonalXPlus(CudaDispatchBuffers* d_buffers) {
     cudaStreamCreate(&capture_stream);
     cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
 
-    SyncFromXPlus<ValueType><<<blocks, threads, 0, capture_stream>>>(d_buffers->auxiliary.ptr);
+    SyncFromXPlus<T><<<blocks, threads, 0, capture_stream>>>((d_buffers->*grid).ptr);
 
     cudaStreamEndCapture(capture_stream, &graph);
     cudaStreamDestroy(capture_stream);
@@ -481,7 +518,9 @@ cudaGraph_t CreateSyncOrthogonalXPlus(CudaDispatchBuffers* d_buffers) {
     return graph;
 }
 
-cudaGraph_t CreateSyncOrthogonalXMinus(CudaDispatchBuffers* d_buffers) {
+template <typename T>
+cudaGraph_t CreateSyncOrthogonalXMinus(CudaDispatchBuffers* d_buffers,
+                                       const CudaDispatchBuffers::SB<T> CudaDispatchBuffers::* grid) {
     static constexpr dim3 blocks{6, SimulationDomain::real_dimensions[1] / 8, SimulationDomain::real_dimensions[2] / 8};
     static constexpr dim3 threads{halo_size.x, 8, 8};
 
@@ -490,7 +529,7 @@ cudaGraph_t CreateSyncOrthogonalXMinus(CudaDispatchBuffers* d_buffers) {
     cudaStreamCreate(&capture_stream);
     cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
 
-    SyncFromXMinus<ValueType><<<blocks, threads, 0, capture_stream>>>(d_buffers->auxiliary.ptr);
+    SyncFromXMinus<T><<<blocks, threads, 0, capture_stream>>>((d_buffers->*grid).ptr);
 
     cudaStreamEndCapture(capture_stream, &graph);
     cudaStreamDestroy(capture_stream);
@@ -498,7 +537,9 @@ cudaGraph_t CreateSyncOrthogonalXMinus(CudaDispatchBuffers* d_buffers) {
     return graph;
 }
 
-cudaGraph_t CreateSyncOrthogonalYPlus(CudaDispatchBuffers* d_buffers) {
+template <typename T>
+cudaGraph_t CreateSyncOrthogonalYPlus(CudaDispatchBuffers* d_buffers,
+                                      const CudaDispatchBuffers::SB<T> CudaDispatchBuffers::* grid) {
     static constexpr dim3 blocks{SimulationDomain::real_dimensions[0] / 8, 6, SimulationDomain::real_dimensions[2] / 8};
     static constexpr dim3 threads{8, halo_size.x, 8};
 
@@ -507,7 +548,7 @@ cudaGraph_t CreateSyncOrthogonalYPlus(CudaDispatchBuffers* d_buffers) {
     cudaStreamCreate(&capture_stream);
     cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
 
-    SyncFromYPlus<ValueType><<<blocks, threads, 0, capture_stream>>>(d_buffers->auxiliary.ptr);
+    SyncFromYPlus<T><<<blocks, threads, 0, capture_stream>>>((d_buffers->*grid).ptr);
 
     cudaStreamEndCapture(capture_stream, &graph);
     cudaStreamDestroy(capture_stream);
@@ -515,7 +556,9 @@ cudaGraph_t CreateSyncOrthogonalYPlus(CudaDispatchBuffers* d_buffers) {
     return graph;
 }
 
-cudaGraph_t CreateSyncOrthogonalYMinus(CudaDispatchBuffers* d_buffers) {
+template <typename T>
+cudaGraph_t CreateSyncOrthogonalYMinus(CudaDispatchBuffers* d_buffers,
+                                       const CudaDispatchBuffers::SB<T> CudaDispatchBuffers::* grid) {
     static constexpr dim3 blocks{SimulationDomain::real_dimensions[0] / 8, 6, SimulationDomain::real_dimensions[2] / 8};
     static constexpr dim3 threads{8, halo_size.x, 8};
 
@@ -524,7 +567,7 @@ cudaGraph_t CreateSyncOrthogonalYMinus(CudaDispatchBuffers* d_buffers) {
     cudaStreamCreate(&capture_stream);
     cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
 
-    SyncFromYMinus<ValueType><<<blocks, threads, 0, capture_stream>>>(d_buffers->auxiliary.ptr);
+    SyncFromYMinus<T><<<blocks, threads, 0, capture_stream>>>((d_buffers->*grid).ptr);
 
     cudaStreamEndCapture(capture_stream, &graph);
     cudaStreamDestroy(capture_stream);
@@ -532,7 +575,61 @@ cudaGraph_t CreateSyncOrthogonalYMinus(CudaDispatchBuffers* d_buffers) {
     return graph;
 }
 
-cudaGraph_t CreateSyncOrthogonal(CudaDispatchBuffers* d_buffers) {
+void SetVelocityDevicePointers(double* x, double* x_temp, double* y, double* y_temp, double* z, double* z_temp) {
+    cudaMemcpyToSymbol(d_velocity_x, &x, sizeof(double*));
+    cudaMemcpyToSymbol(d_velocity_x_temp, &x_temp, sizeof(double*));
+    cudaMemcpyToSymbol(d_velocity_y, &y, sizeof(double*));
+    cudaMemcpyToSymbol(d_velocity_y_temp, &y_temp, sizeof(double*));
+    cudaMemcpyToSymbol(d_velocity_z, &z, sizeof(double*));
+    cudaMemcpyToSymbol(d_velocity_z_temp, &z_temp, sizeof(double*));
+}
+
+__global__ void SwapVelocityBuffers() {
+    double* temp = d_velocity_x;
+    d_velocity_x = d_velocity_x_temp;
+    d_velocity_x_temp = temp;
+
+    temp = d_velocity_y;
+    d_velocity_y = d_velocity_y_temp;
+    d_velocity_y_temp = temp;
+
+    temp = d_velocity_z;
+    d_velocity_z = d_velocity_z_temp;
+    d_velocity_z_temp = temp;
+}
+
+__device__ double* GetVelocityXSegment(double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::VxSB<double>::elements_padded * index;
+}
+__device__ const double* GetVelocityXSegment(const double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::VxSB<double>::elements_padded * index;
+}
+__device__ double* GetVelocityYSegment(double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::VySB<double>::elements_padded * index;
+}
+__device__ const double* GetVelocityYSegment(const double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::VySB<double>::elements_padded * index;
+}
+__device__ double* GetVelocityZSegment(double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::VzSB<double>::elements_padded * index;
+}
+__device__ const double* GetVelocityZSegment(const double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::VzSB<double>::elements_padded * index;
+}
+
+cudaGraph_t CreateSwapVelocities() {
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+
+    SwapVelocityBuffers<<<1, 1, 0, capture_stream>>>();
+
+    cudaStreamEndCapture(capture_stream, &graph);
+    return graph;
+}
+
+cudaGraph_t CreateSyncOrthogonal(CudaDispatchBuffers* d_buffers,
+                                 const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* grid) {
     static constexpr size_t directions = 4;
     cudaGraph_t graph;
     cudaGraphCreate(&graph);
@@ -540,22 +637,22 @@ cudaGraph_t CreateSyncOrthogonal(CudaDispatchBuffers* d_buffers) {
     cudaGraphNode_t nodes[directions];
 
     {
-        auto child = CreateSyncOrthogonalXPlus(d_buffers);
+        auto child = CreateSyncOrthogonalXPlus(d_buffers, grid);
         cudaGraphAddChildGraphNode(&nodes[0], graph, nullptr, 0, child);
         cudaGraphDestroy(child);
     }
     {
-        auto child = CreateSyncOrthogonalXMinus(d_buffers);
+        auto child = CreateSyncOrthogonalXMinus(d_buffers, grid);
         cudaGraphAddChildGraphNode(&nodes[1], graph, nullptr, 0, child);
         cudaGraphDestroy(child);
     }
     {
-        auto child = CreateSyncOrthogonalYPlus(d_buffers);
+        auto child = CreateSyncOrthogonalYPlus(d_buffers, grid);
         cudaGraphAddChildGraphNode(&nodes[2], graph, nullptr, 0, child);
         cudaGraphDestroy(child);
     }
     {
-        auto child = CreateSyncOrthogonalYMinus(d_buffers);
+        auto child = CreateSyncOrthogonalYMinus(d_buffers, grid);
         cudaGraphAddChildGraphNode(&nodes[3], graph, nullptr, 0, child);
         cudaGraphDestroy(child);
     }
@@ -632,29 +729,46 @@ cudaGraph_t CreateUpdateSigma() {
 cudaGraph_t CreatePCG_PreLoop(CudaDispatchBuffers* d_buffers) {
     cudaGraph_t pre_loop_part;
     cudaGraphCreate(&pre_loop_part);
-    cudaGraphNode_t nodes[5];
+    cudaGraphNode_t nodes[7];
 
     {
+        cudaMemsetParams memset_params{};
+        memset_params.dst = d_buffers->pressure.ptr;
+        memset_params.elementSize = 1;
+        memset_params.value = 0;
+        memset_params.height = 1;
+        memset_params.width = d_buffers->pressure.allocation_size;
+        cudaGraphAddMemsetNode(&nodes[0], pre_loop_part, nullptr, 0, &memset_params);
+
+        cudaGraphAddMemcpyNode1D(&nodes[1],
+                                 pre_loop_part,
+                                 nullptr,
+                                 0,
+                                 d_buffers->residual.ptr,
+                                 d_buffers->divergence.ptr,
+                                 d_buffers->residual.allocation_size,
+                                 cudaMemcpyDeviceToDevice);
+
         auto apply_M = CreateApplyMGraph(d_buffers);
-        cudaGraphAddChildGraphNode(&nodes[0], pre_loop_part, nullptr, 0, apply_M);
+        cudaGraphAddChildGraphNode(&nodes[2], pre_loop_part, &nodes[0], 2, apply_M);
         cudaGraphDestroy(apply_M);
 
-        auto sync_halos = CreateSyncOrthogonal(d_buffers);
-        cudaGraphAddChildGraphNode(&nodes[1], pre_loop_part, &nodes[0], 1, sync_halos);
+        auto sync_halos = CreateSyncOrthogonal(d_buffers, &CudaDispatchBuffers::auxiliary);
+        cudaGraphAddChildGraphNode(&nodes[3], pre_loop_part, &nodes[2], 1, sync_halos);
         cudaGraphDestroy(sync_halos);
 
         auto aux_residual_dot_product = CreateDotProductR(d_buffers);
-        cudaGraphAddChildGraphNode(&nodes[2], pre_loop_part, &nodes[0], 1, aux_residual_dot_product);
+        cudaGraphAddChildGraphNode(&nodes[4], pre_loop_part, &nodes[2], 1, aux_residual_dot_product);
         cudaGraphDestroy(aux_residual_dot_product);
 
         auto update_sigma = CreateUpdateSigma();
         // depends on setting beta and halo sync
-        cudaGraphAddChildGraphNode(&nodes[3], pre_loop_part, &nodes[2], 1, update_sigma);
+        cudaGraphAddChildGraphNode(&nodes[5], pre_loop_part, &nodes[4], 1, update_sigma);
         cudaGraphDestroy(update_sigma);
 
-        cudaGraphAddMemcpyNode1D(&nodes[4],
+        cudaGraphAddMemcpyNode1D(&nodes[6],
                                  pre_loop_part,
-                                 &nodes[1],
+                                 &nodes[3],
                                  1,
                                  d_buffers->search.ptr,
                                  d_buffers->auxiliary.ptr,
@@ -675,7 +789,7 @@ cudaGraph_t CreatePCG_MainLoop_Upper(CudaDispatchBuffers* d_buffers) {
         cudaGraphAddChildGraphNode(&nodes[0], loop_upper_part, nullptr, 0, apply_A);
         cudaGraphDestroy(apply_A);
 
-        auto sync_halos = CreateSyncOrthogonal(d_buffers);
+        auto sync_halos = CreateSyncOrthogonal(d_buffers, &CudaDispatchBuffers::auxiliary);
         cudaGraphAddChildGraphNode(&nodes[1], loop_upper_part, &nodes[0], 1, sync_halos);
         cudaGraphDestroy(sync_halos);
 
@@ -716,7 +830,7 @@ cudaGraph_t CreatePCG_MainLoop_Lower(CudaDispatchBuffers* d_buffers) {
         cudaGraphAddChildGraphNode(&nodes[0], loop_lower_part, nullptr, 0, apply_M);
         cudaGraphDestroy(apply_M);
 
-        auto sync_halos = CreateSyncOrthogonal(d_buffers);
+        auto sync_halos = CreateSyncOrthogonal(d_buffers, &CudaDispatchBuffers::auxiliary);
         cudaGraphAddChildGraphNode(&nodes[1], loop_lower_part, &nodes[0], 1, sync_halos);
         cudaGraphDestroy(sync_halos);
 
@@ -894,6 +1008,70 @@ cudaGraph_t CreatePCG_Solver(CudaDispatchBuffers* d_buffers) {
             eval_conditional_params.kernel.blockDim = dim3(1);
             cudaGraphAddNode(&nodes[11], loop_body, &nodes[9], nullptr, 1, &eval_conditional_params);
         }
+    }
+
+    return graph;
+}
+
+__device__ bool IsSolidCell(size_t z_index) { return z_index == 0 || z_index + 1 >= domain_dimensions.z; }
+
+// dispatched over real cells
+template <typename T>
+__global__ void CalculateDivergence(T* divergence, uint32_t segment) {
+    const double* vel_x = GetVelocityXSegment(d_velocity_x, segment);
+    const double* vel_y = GetVelocityYSegment(d_velocity_y, segment);
+    const double* vel_z = GetVelocityZSegment(d_velocity_z, segment);
+    uint32_t x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+    uint32_t y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+    uint32_t z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+
+    if (z >= z_border_size && z < domain_dimensions.z - z_border_size) {
+        static constexpr int flowPosX = 1;
+        static constexpr int flowNegX = 1;
+        static constexpr int flowPosY = 1;
+        static constexpr int flowNegY = 1;
+        int flowPosZ = !IsSolidCell(z + 1);
+        int flowNegZ = !IsSolidCell(z - 1);
+
+        T velocityX_POS = vel_x[StaggeredXGridIndex(x + 1, y, z)] * flowPosX;
+        T velocityX_NEG = vel_x[StaggeredXGridIndex(x, y, z)] * flowNegX;
+        T velocityY_POS = vel_y[StaggeredYGridIndex(x, y + 1, z)] * flowPosY;
+        T velocityY_NEG = vel_y[StaggeredYGridIndex(x, y, z)] * flowNegY;
+        T velocityZ_POS = vel_z[StaggeredZGridIndex(x, y, z + 1)] * flowPosZ;
+        T velocityZ_NEG = vel_z[StaggeredZGridIndex(x, y, z)] * flowNegZ;
+
+        T gradientX = velocityX_POS - velocityX_NEG;
+        T gradientY = velocityY_POS - velocityY_NEG;
+        T gradientZ = velocityZ_POS - velocityZ_NEG;
+
+        divergence[GridIndex(x, y, z)] = -(gradientX + gradientY + gradientZ) / SimulationConstants::scale;
+    }
+}
+
+void CreateCalculateDomainsDivergence(cudaGraph_t* graph, CudaDispatchBuffers* d_buffers, size_t domain_index) {
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeThreadLocal);
+
+    CalculateDivergence<ValueType>
+        <<<grid_dimensions, block_dimensions, 0, capture_stream>>>(d_buffers->divergence.GetSegment(domain_index),
+                                                                   domain_index);
+
+    cudaStreamEndCapture(capture_stream, graph);
+}
+
+cudaGraph_t CreateCalculateDivergence(CudaDispatchBuffers* d_buffers) {
+    cudaGraph_t graph;
+    cudaGraphCreate(&graph);
+
+    cudaGraph_t children[EulerFluidSim::domains];
+    cudaGraphNode_t nodes[EulerFluidSim::domains];
+
+    for (size_t i = 0; i < EulerFluidSim::domains; ++i) {
+        CreateCalculateDomainsDivergence(&children[i], d_buffers, i);
+        cudaGraphAddChildGraphNode(&nodes[i], graph, nullptr, 0, children[i]);
+        cudaGraphDestroy(children[i]);
     }
 
     return graph;

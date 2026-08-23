@@ -32,6 +32,8 @@ namespace SimulationConstants {
 enum class SyncScope : uint8_t { Orthogonal, Full };
 
 // assume that there is no padding needed between them
+// sim_dom constraints guarantee that Elements % 32 == 0
+// TODO: proper RAII
 template <typename T, size_t Elements, size_t Segments>
 struct SegmentedBuffer {
     using value_t = T;
@@ -47,9 +49,46 @@ struct SegmentedBuffer {
     }
 };
 
+// TODO: proper RAII
+template <typename T, size_t Elements, size_t PadTo, size_t Segments>
+struct SwapBuffer {
+    using value_t = T;
+    static constexpr size_t elements = Elements;
+    static constexpr size_t elements_padded = ((Elements - 1) / PadTo + 1) * PadTo;
+    static constexpr size_t segments = Segments;
+    static constexpr size_t allocation_size = sizeof(T) * elements_padded * segments;
+
+    T* b1;
+    T* b2;
+    T** front_buffer;
+    T** back_buffer;
+
+    T* GetFrontSegment(size_t index) const {
+        assert(index < segments);
+        return *front_buffer + elements_padded * index;
+    }
+
+    T* GetBackSegment(size_t index) const {
+        assert(index < segments);
+        return *back_buffer + elements_padded * index;
+    }
+
+    void SwapBuffers() noexcept { std::swap(b1, b2); }
+};
+
 struct CudaDispatchBuffers {
+    static constexpr size_t padding_size = 16;
     template <typename T>
     using SB = SegmentedBuffer<T, Cardinality(SimulationDomain::dimensions), SimulationConstants::domains>;
+    template <typename T>
+    using VxSB =
+        SwapBuffer<T, Cardinality(SimulationDomain::velocitiesXDimensions), padding_size, SimulationConstants::domains>;
+    template <typename T>
+    using VySB =
+        SwapBuffer<T, Cardinality(SimulationDomain::velocitiesYDimensions), padding_size, SimulationConstants::domains>;
+    template <typename T>
+    using VzSB =
+        SwapBuffer<T, Cardinality(SimulationDomain::velocitiesZDimensions), padding_size, SimulationConstants::domains>;
 
     double* reduction_buffer;
     SB<double> pressure;
@@ -59,10 +98,15 @@ struct CudaDispatchBuffers {
     SB<double> search;
     SB<CoefficientsValues<double>> coefficients;
     SB<CoefficientsValues<double>> preconditioner;
+    VxSB<double> velocities_x;
+    VySB<double> velocities_y;
+    VzSB<double> velocities_z;
 };
 struct CudaGraphs {
     cudaStream_t stream;
 
+    cudaGraphExec_t calculate_divergence;
+    cudaGraphExec_t sync_divergence;
     cudaGraphExec_t PCG_Solver;
 };
 
