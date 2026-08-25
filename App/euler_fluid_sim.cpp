@@ -162,6 +162,7 @@ namespace DifferentW {
 
 } // namespace DifferentW
 
+// Only relevant to the cubic interpolation, but for that it can be 0 anyway
 // Cube-corner halo cells do not have corresponding real cells
 // They are filled with averages
 // It is not correct, but good enough for now
@@ -185,7 +186,8 @@ void FillCornerHalos(Grid& grid, size_t face_index) {
                     continue;
                 }
                 for (size_t k = 0; k < Grid::size_Z; ++k) {
-                    grid[i][j][k] = 0.5 * (grid[i - dx][j][k] + grid[i][j - dy][k]);
+                    grid[i][j][k] = 0.0;
+                    //grid[i][j][k] = 0.5 * (grid[i - dx][j][k] + grid[i][j - dy][k]);
                 }
             }
         }
@@ -337,11 +339,6 @@ void SyncGridVelocitiesXY(std::array<SimulationDomain, EulerFluidSim::domains>& 
             }
         }
     }
-
-    for (auto& domain : domains) {
-        FillCornerHalos<SimulationDomain::GridXValues, StaggerX>(*domain.velocities_x_, domain.face_index_);
-        FillCornerHalos<SimulationDomain::GridYValues, StaggerY>(*domain.velocities_y_, domain.face_index_);
-    }
 }
 
 // TODO: main thread is idle, while worker threads crunch through domains.
@@ -432,8 +429,23 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
         cudaGraphDestroy(graph);
     }
     {
+        auto graph = CreateUpdateVelocities(&cuda_buffers_);
+        cudaGraphInstantiate(&cuda_graphs_.update_velocities, graph, 0);
+        cudaGraphDestroy(graph);
+    }
+    {
         auto graph = CreateSyncOrthogonal(&cuda_buffers_, &CudaDispatchBuffers::divergence);
         cudaGraphInstantiate(&cuda_graphs_.sync_divergence, graph, 0);
+        cudaGraphDestroy(graph);
+    }
+    {
+        auto graph = CreateSyncOrthogonal(&cuda_buffers_, &CudaDispatchBuffers::pressure);
+        cudaGraphInstantiate(&cuda_graphs_.sync_pressure, graph, 0);
+        cudaGraphDestroy(graph);
+    }
+    {
+        auto graph = CreateSyncVelocitiesOrthogonal();
+        cudaGraphInstantiate(&cuda_graphs_.sync_velocities, graph, 0);
         cudaGraphDestroy(graph);
     }
     {
@@ -466,6 +478,13 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
                                                                SimulationDomain::dimensions.z));
     }
 
+    // Zero out memory for velocities
+    for (size_t i = 0; i < domains; ++i) {
+        std::memset((*domains_)[i].velocities_x_.get(), 0, (*domains_)[i].velocities_x_->memory_footprint);
+        std::memset((*domains_)[i].velocities_y_.get(), 0, (*domains_)[i].velocities_y_->memory_footprint);
+        std::memset((*domains_)[i].velocities_z_.get(), 0, (*domains_)[i].velocities_z_->memory_footprint);
+    }
+
     DebugRandomizeBorderVelocities();
     SetInitialTemperature();
 
@@ -478,7 +497,10 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
 
 EulerFluidSim::~EulerFluidSim() {
     cudaGraphExecDestroy(cuda_graphs_.calculate_divergence);
+    cudaGraphExecDestroy(cuda_graphs_.update_velocities);
     cudaGraphExecDestroy(cuda_graphs_.sync_divergence);
+    cudaGraphExecDestroy(cuda_graphs_.sync_pressure);
+    cudaGraphExecDestroy(cuda_graphs_.sync_velocities);
     cudaGraphExecDestroy(cuda_graphs_.PCG_Solver);
 
     for (auto& domain : *domains_) {
@@ -650,15 +672,22 @@ void EulerFluidSim::DebugRandomizeBorderVelocities() {
         std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
         thread_pool_->Enqueue([domain_ref, &sync_latch]() {
             auto& domain = domain_ref.get();
-            for (auto it = domain.velocities_x_->flat_begin(); it != domain.velocities_x_->flat_end(); ++it) {
-                *it = (math::random<double>() * 2 - 1.0) * SimulationConstants::scale;
-            }
-            for (auto it = domain.velocities_y_->flat_begin(); it != domain.velocities_y_->flat_end(); ++it) {
-                *it = (math::random<double>() * 2 - 1.0) * SimulationConstants::scale;
-            }
-            for (auto it = domain.velocities_z_->flat_begin(); it != domain.velocities_z_->flat_end(); ++it) {
-                *it = (math::random<double>() * 2 - 1.0) * SimulationConstants::scale;
-            }
+
+            auto randomize_real_cells = [](auto* grid) {
+                for (size_t x = SimulationDomain::halo_size.x; x < grid->size_X - SimulationDomain::halo_size.x; ++x) {
+                    for (size_t y = SimulationDomain::halo_size.y; y < grid->size_Y - SimulationDomain::halo_size.y;
+                         ++y) {
+                        for (size_t z = SimulationDomain::halo_size.z; z < grid->size_Z - SimulationDomain::halo_size.z;
+                             ++z) {
+                            (*grid)[x][y][z] = (math::random<double>() * 2 - 1.0) * SimulationConstants::scale;
+                        }
+                    }
+                }
+            };
+
+            randomize_real_cells(domain.velocities_x_.get());
+            randomize_real_cells(domain.velocities_y_.get());
+            randomize_real_cells(domain.velocities_z_.get());
 
             // Set all solid/solid and solid/fluid borders to 0
             for (size_t x = 0; x < SimulationDomain::dimensions.x; ++x) {
@@ -693,10 +722,6 @@ void EulerFluidSim::DebugRandomizeBorderVelocities() {
 void EulerFluidSim::SyncVelocitiesZ() {
     ::SyncGridValues<SimulationDomain::GridZValues, math::vec3<int>{0, 0, 1}>(*domains_,
                                                                               &SimulationDomain::velocities_z_);
-    for (auto& domain : *domains_) {
-        FillCornerHalos<SimulationDomain::GridZValues, math::vec3<int>{0, 0, 1}>(*domain.velocities_z_,
-                                                                                 domain.face_index_);
-    }
 }
 
 void EulerFluidSim::SyncVelocities() {
@@ -756,11 +781,15 @@ void EulerFluidSim::PCG() {
     last_PCG_iteration_count = GetIterationsOutput();
     cudaStreamSynchronize(cuda_graphs_.stream);
 
+    cudaGraphLaunch(cuda_graphs_.sync_pressure, cuda_graphs_.stream);
+    cudaStreamSynchronize(cuda_graphs_.stream);
+
     {
         auto err = cudaGetLastError();
         assert(err == cudaSuccess);
     }
 
+    // Temp memcpy to host
     for (size_t i = 0; i < domains; ++i) {
         cudaMemcpyAsync((*domains_)[i].cell_pressure_->flat_data(),
                         cuda_buffers_.pressure.GetSegment(i),
@@ -768,13 +797,11 @@ void EulerFluidSim::PCG() {
                         cudaMemcpyDeviceToHost,
                         cuda_graphs_.stream);
     }
-
     cudaStreamSynchronize(cuda_graphs_.stream);
-    SyncGridValues(&SimulationDomain::cell_pressure_);
 }
 
 void EulerFluidSim::ProjectVelocities() {
-    // Tempt memcpy grom host
+    // Temp memcpy from host
     for (size_t i = 0; i < domains; ++i) {
         cudaMemcpyAsync(GetVelX() + CudaDispatchBuffers::VxSB<double>::elements_padded * i,
                         (*domains_)[i].velocities_x_->flat_data(),
@@ -801,20 +828,34 @@ void EulerFluidSim::ProjectVelocities() {
     cudaStreamSynchronize(cuda_graphs_.stream);
 
     PCG();
-    {
-        std::latch sync_latch{domains};
 
-        for (size_t i = 0; i < domains; ++i) {
-            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-            thread_pool_->Enqueue([domain_ref, &sync_latch]() {
-                domain_ref.get().UpdateVelocities();
-                sync_latch.count_down();
-            });
-        }
+    cudaGraphLaunch(cuda_graphs_.update_velocities, cuda_graphs_.stream);
+    cudaStreamSynchronize(cuda_graphs_.stream);
+    cudaGraphLaunch(cuda_graphs_.sync_velocities, cuda_graphs_.stream);
+    cudaStreamSynchronize(cuda_graphs_.stream);
 
-        sync_latch.wait();
+    // Temp memcpy to host
+    for (size_t i = 0; i < domains; ++i) {
+        cudaMemcpyAsync((*domains_)[i].velocities_x_->flat_data(),
+                        GetVelX() + CudaDispatchBuffers::VxSB<double>::elements_padded * i,
+                        SimulationDomain::GridXValues::memory_footprint,
+                        cudaMemcpyDeviceToHost,
+                        cuda_graphs_.stream);
+        cudaMemcpyAsync((*domains_)[i].velocities_y_->flat_data(),
+                        GetVelY() + CudaDispatchBuffers::VySB<double>::elements_padded * i,
+                        SimulationDomain::GridYValues::memory_footprint,
+                        cudaMemcpyDeviceToHost,
+                        cuda_graphs_.stream);
+        cudaMemcpyAsync((*domains_)[i].velocities_z_->flat_data(),
+                        GetVelZ() + CudaDispatchBuffers::VzSB<double>::elements_padded * i,
+                        SimulationDomain::GridZValues::memory_footprint,
+                        cudaMemcpyDeviceToHost,
+                        cuda_graphs_.stream);
     }
-    SyncVelocities();
+    {
+        auto err = cudaGetLastError();
+        assert(err == cudaSuccess);
+    }
 }
 
 // Debug draw methods

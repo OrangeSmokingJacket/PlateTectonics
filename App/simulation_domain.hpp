@@ -84,7 +84,6 @@ struct SimulationDomain {
     explicit SimulationDomain(size_t face_index);
     void CalculateCoefficients();
     void CalculatePreconditioner();
-    void UpdateVelocities();
     void ApplyBuoyancy(const EulerFluidSim* simulation);
     void AdvectVelocities();
     void AdvectTemperature();

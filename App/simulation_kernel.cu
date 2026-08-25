@@ -46,35 +46,52 @@ uint32_t GetIterationsOutput() {
     return result;
 }
 
-constexpr dim3 domain_dimensions{static_cast<uint32_t>(SimulationDomain::dimensions[0]),
-                                 static_cast<uint32_t>(SimulationDomain::dimensions[1]),
-                                 static_cast<uint32_t>(SimulationDomain::dimensions[2])};
+using ValueType = SimulationDomain::GridValues::value_type;
+static constexpr size_t elements = SimulationDomain::GridValues::cardinality;
+static constexpr dim3 block_dimensions{8, 8, 8};
+static constexpr dim3 grid_dimensions{SimulationDomain::real_dimensions[0] / block_dimensions.x,
+                                      SimulationDomain::real_dimensions[1] / block_dimensions.y,
+                                      SimulationDomain::real_dimensions[2] / block_dimensions.z};
+constexpr dim3 domain_dimensions{SimulationDomain::dimensions[0],
+                                 SimulationDomain::dimensions[1],
+                                 SimulationDomain::dimensions[2]};
+constexpr dim3 staggered_x_domain_dimensions{SimulationDomain::velocitiesXDimensions[0],
+                                             SimulationDomain::velocitiesXDimensions[1],
+                                             SimulationDomain::velocitiesXDimensions[2]};
+constexpr dim3 staggered_y_domain_dimensions{SimulationDomain::velocitiesYDimensions[0],
+                                             SimulationDomain::velocitiesYDimensions[1],
+                                             SimulationDomain::velocitiesYDimensions[2]};
+constexpr dim3 staggered_z_domain_dimensions{SimulationDomain::velocitiesZDimensions[0],
+                                             SimulationDomain::velocitiesZDimensions[1],
+                                             SimulationDomain::velocitiesZDimensions[2]};
 
-constexpr dim3 halo_size{static_cast<uint32_t>(SimulationDomain::halo_size[0]),
-                         static_cast<uint32_t>(SimulationDomain::halo_size[1]),
-                         static_cast<uint32_t>(SimulationDomain::halo_size[2])};
+constexpr dim3 halo_size{SimulationDomain::halo_size[0],
+                         SimulationDomain::halo_size[1],
+                         SimulationDomain::halo_size[2]};
 
 constexpr uint32_t z_border_size = SimulationDomain::border_size;
 
+template <dim3 GridDimensions = domain_dimensions>
 __device__ uint32_t GridIndex(uint32_t x, uint32_t y, uint32_t z) {
-    return domain_dimensions.y * domain_dimensions.z * x + domain_dimensions.z * y + z;
-}
-
-__device__ uint32_t StaggeredXGridIndex(uint32_t x, uint32_t y, uint32_t z) {
-    return domain_dimensions.y * domain_dimensions.z * x + domain_dimensions.z * y + z;
-}
-
-__device__ uint32_t StaggeredYGridIndex(uint32_t x, uint32_t y, uint32_t z) {
-    return (domain_dimensions.y + 1) * domain_dimensions.z * x + domain_dimensions.z * y + z;
-}
-
-__device__ uint32_t StaggeredZGridIndex(uint32_t x, uint32_t y, uint32_t z) {
-    return domain_dimensions.y * (domain_dimensions.z + 1) * x + (domain_dimensions.z + 1) * y + z;
+    return GridDimensions.y * GridDimensions.z * x + GridDimensions.z * y + z;
 }
 
 __device__ uint32_t GridIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
     return domain_dimensions.x * domain_dimensions.y * domain_dimensions.z * w +
            domain_dimensions.y * domain_dimensions.z * x + domain_dimensions.z * y + z;
+}
+
+__device__ uint32_t StaggeredGridXIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+    return CudaDispatchBuffers::VxSB<ValueType>::elements_padded * w +
+           GridIndex<staggered_x_domain_dimensions>(x, y, z);
+}
+__device__ uint32_t StaggeredGridYIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+    return CudaDispatchBuffers::VySB<ValueType>::elements_padded * w +
+           GridIndex<staggered_y_domain_dimensions>(x, y, z);
+}
+__device__ uint32_t StaggeredGridZIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+    return CudaDispatchBuffers::VzSB<ValueType>::elements_padded * w +
+           GridIndex<staggered_z_domain_dimensions>(x, y, z);
 }
 
 // Dispatched over real_dimensions
@@ -86,7 +103,7 @@ __global__ void ApplyCoefficientsKernel(T* __restrict__ target,
     uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
     uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
 
-    target[GridIndex(index_x, index_y, index_z)] =
+    target[GridIndex<>(index_x, index_y, index_z)] =
         coefficients[GridIndex(index_x, index_y, index_z)].diag * source[GridIndex(index_x, index_y, index_z)] +
         coefficients[GridIndex(index_x, index_y, index_z)].plusx * source[GridIndex(index_x + 1, index_y, index_z)] +
         coefficients[GridIndex(index_x, index_y, index_z)].plusy * source[GridIndex(index_x, index_y + 1, index_z)] +
@@ -97,13 +114,6 @@ __global__ void ApplyCoefficientsKernel(T* __restrict__ target,
             source[GridIndex(index_x, index_y - 1, index_z)] +
         coefficients[GridIndex(index_x, index_y, index_z - 1)].plusz * source[GridIndex(index_x, index_y, index_z - 1)];
 }
-
-using ValueType = SimulationDomain::GridValues::value_type;
-static constexpr size_t elements = SimulationDomain::GridValues::cardinality;
-static constexpr dim3 block_dimensions{8, 8, 8};
-static constexpr dim3 grid_dimensions{SimulationDomain::real_dimensions[0] / block_dimensions.x,
-                                      SimulationDomain::real_dimensions[1] / block_dimensions.y,
-                                      SimulationDomain::real_dimensions[2] / block_dimensions.z};
 
 void CreateApplySparseMatrixGraph(
     cudaGraph_t* graph,
@@ -405,6 +415,65 @@ cudaGraph_t CreateXpYD(CudaDispatchBuffers* d_buffers) {
     return graph;
 }
 
+void SetVelocityDevicePointers(double* x, double* x_temp, double* y, double* y_temp, double* z, double* z_temp) {
+    cudaMemcpyToSymbol(d_velocity_x, &x, sizeof(double*));
+    cudaMemcpyToSymbol(d_velocity_x_temp, &x_temp, sizeof(double*));
+    cudaMemcpyToSymbol(d_velocity_y, &y, sizeof(double*));
+    cudaMemcpyToSymbol(d_velocity_y_temp, &y_temp, sizeof(double*));
+    cudaMemcpyToSymbol(d_velocity_z, &z, sizeof(double*));
+    cudaMemcpyToSymbol(d_velocity_z_temp, &z_temp, sizeof(double*));
+}
+
+__global__ void SwapVelocityBuffers() {
+    double* temp = d_velocity_x;
+    d_velocity_x = d_velocity_x_temp;
+    d_velocity_x_temp = temp;
+
+    temp = d_velocity_y;
+    d_velocity_y = d_velocity_y_temp;
+    d_velocity_y_temp = temp;
+
+    temp = d_velocity_z;
+    d_velocity_z = d_velocity_z_temp;
+    d_velocity_z_temp = temp;
+}
+
+__device__ double* GetGridSegment(double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::SB<double>::elements * index;
+}
+__device__ const double* GetGridSegment(const double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::SB<double>::elements * index;
+}
+__device__ double* GetVelocityXSegment(double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::VxSB<double>::elements_padded * index;
+}
+__device__ const double* GetVelocityXSegment(const double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::VxSB<double>::elements_padded * index;
+}
+__device__ double* GetVelocityYSegment(double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::VySB<double>::elements_padded * index;
+}
+__device__ const double* GetVelocityYSegment(const double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::VySB<double>::elements_padded * index;
+}
+__device__ double* GetVelocityZSegment(double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::VzSB<double>::elements_padded * index;
+}
+__device__ const double* GetVelocityZSegment(const double* ptr, uint32_t index) {
+    return ptr + CudaDispatchBuffers::VzSB<double>::elements_padded * index;
+}
+
+cudaGraph_t CreateSwapVelocities() {
+    cudaGraph_t graph;
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+
+    SwapVelocityBuffers<<<1, 1, 0, capture_stream>>>();
+
+    cudaStreamEndCapture(capture_stream, &graph);
+    return graph;
+}
+
 // For now that array is of a one from euler_fluid_sim.cpp
 // For W neighbours it is cheaper to look it up, than compute
 struct WNeighbour {
@@ -414,12 +483,12 @@ struct WNeighbour {
     size_t y_minus;
 };
 // Get neighbouring face in specific direction
-__device__ constexpr WNeighbour w_neighbours[6] = {WNeighbour{1, 4, 2, 5},
-                                                   WNeighbour{2, 5, 0, 3},
-                                                   WNeighbour{0, 3, 1, 4},
-                                                   WNeighbour{4, 1, 5, 2},
-                                                   WNeighbour{5, 2, 3, 0},
-                                                   WNeighbour{3, 0, 4, 1}};
+__device__ constexpr WNeighbour w_neighbours[] = {WNeighbour{1, 4, 2, 5},
+                                                  WNeighbour{2, 5, 0, 3},
+                                                  WNeighbour{0, 3, 1, 4},
+                                                  WNeighbour{4, 1, 5, 2},
+                                                  WNeighbour{5, 2, 3, 0},
+                                                  WNeighbour{3, 0, 4, 1}};
 
 // dispatched over real cells
 template <typename T>
@@ -471,7 +540,7 @@ __global__ void SyncFromYPlus(T* v) {
     uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
     uint32_t index_w = blockIdx.y;
 
-    uint32_t n_index_x = domain_dimensions.x - halo_size.x * 2;
+    uint32_t n_index_x = domain_dimensions.x - halo_size.x - 1;
     uint32_t n_index_y = index_x;
     uint32_t n_index_z = index_z;
     uint32_t n_index_w = w_neighbours[index_w].y_plus;
@@ -499,10 +568,249 @@ __global__ void SyncFromYMinus(T* v) {
         v[GridIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
 }
 
+// Due to domain layout selection, X velocity will always be filled from Y and vice versa
+
+//! Dispatch with halo.x + 1 because of stagger grid
+__global__ void SyncVelocityXFromXPlus() {
+    // blockId.x indicates domain
+    // blockID.yz - dispatches over domain face
+    // threadIdx.x = halo plane
+
+    uint32_t index_x = staggered_x_domain_dimensions.x - halo_size.x - 1;
+    uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.x;
+
+    uint32_t n_index_x = index_y;
+    uint32_t n_index_y = staggered_y_domain_dimensions.y - halo_size.y - 1;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].x_plus;
+
+    d_velocity_x[StaggeredGridXIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
+        d_velocity_y[StaggeredGridYIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+}
+__global__ void SyncVelocityXFromXMinus() {
+    // blockId.x indicates domain
+    // blockID.yz - dispatches over domain face
+    // threadIdx.x = halo plane
+
+    uint32_t index_x = 0;
+    uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.x;
+
+    uint32_t n_index_x = staggered_y_domain_dimensions.x - index_y - 1;
+    uint32_t n_index_y = halo_size.y * 2 - 1;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].x_minus;
+
+    d_velocity_x[StaggeredGridXIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
+        d_velocity_y[StaggeredGridYIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+}
+__global__ void SyncVelocityXFromYPlus() {
+    //! X dimension is not mult of blockDim
+    // blockId.y indicates domain
+    // blockID.xz - dispatches over domain face
+    // threadIdx.y = halo plane
+
+    if (blockIdx.x * blockDim.x + threadIdx.x < staggered_x_domain_dimensions.x - halo_size.x * 2) {
+        uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+        uint32_t index_y = staggered_x_domain_dimensions.y - halo_size.y;
+        uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+        uint32_t index_w = blockIdx.y;
+
+        uint32_t n_index_x = staggered_y_domain_dimensions.x - halo_size.x - 1;
+        uint32_t n_index_y = index_x;
+        uint32_t n_index_z = index_z;
+        uint32_t n_index_w = w_neighbours[index_w].y_plus;
+
+        d_velocity_x[StaggeredGridXIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
+            d_velocity_y[StaggeredGridYIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+    }
+}
+__global__ void SyncVelocityXFromYMinus() {
+    //! X dimension is not mult of blockDim
+    // blockId.y indicates domain
+    // blockID.xz - dispatches over domain face
+    // threadIdx.y = halo plane
+
+    if (blockIdx.x * blockDim.x + threadIdx.x < staggered_x_domain_dimensions.x - halo_size.x * 2) {
+        uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+        uint32_t index_y = 0;
+        uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+        uint32_t index_w = blockIdx.y;
+
+        uint32_t n_index_x = halo_size.x * 2 - 1;
+        uint32_t n_index_y = staggered_y_domain_dimensions.y - index_x - 1;
+        uint32_t n_index_z = index_z;
+        uint32_t n_index_w = w_neighbours[index_w].y_minus;
+
+        d_velocity_x[StaggeredGridXIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
+            d_velocity_y[StaggeredGridYIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+    }
+}
+
+__global__ void SyncVelocityYFromXPlus() {
+    //! Y dimension is not mult of blockDim
+    // blockId.x indicates domain
+    // blockID.yz - dispatches over domain face
+    // threadIdx.x = halo plane
+
+    if (blockIdx.y * blockDim.y + threadIdx.y < staggered_y_domain_dimensions.y - halo_size.y * 2) {
+        uint32_t index_x = staggered_y_domain_dimensions.x - halo_size.x;
+        uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+        uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+        uint32_t index_w = blockIdx.x;
+
+        uint32_t n_index_x = index_y;
+        uint32_t n_index_y = staggered_x_domain_dimensions.y - halo_size.y - 1;
+        uint32_t n_index_z = index_z;
+        uint32_t n_index_w = w_neighbours[index_w].x_plus;
+
+        d_velocity_y[StaggeredGridYIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
+            d_velocity_x[StaggeredGridXIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+    }
+}
+__global__ void SyncVelocityYFromXMinus() {
+    //! Y dimension is not mult of blockDim
+    // blockId.x indicates domain
+    // blockID.yz - dispatches over domain face
+    // threadIdx.x = halo plane
+
+    if (blockIdx.y * blockDim.y + threadIdx.y < staggered_y_domain_dimensions.y - halo_size.y * 2) {
+        uint32_t index_x = 0;
+        uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+        uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+        uint32_t index_w = blockIdx.x;
+
+        uint32_t n_index_x = staggered_x_domain_dimensions.x - index_y - 1;
+        uint32_t n_index_y = halo_size.y * 2 - 1;
+        uint32_t n_index_z = index_z;
+        uint32_t n_index_w = w_neighbours[index_w].x_minus;
+
+        d_velocity_y[StaggeredGridYIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
+            d_velocity_x[StaggeredGridXIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+    }
+}
+__global__ void SyncVelocityYFromYPlus() {
+    // blockId.y indicates domain
+    // blockID.xz - dispatches over domain face
+    // threadIdx.y = halo plane
+
+    uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+    uint32_t index_y = staggered_y_domain_dimensions.y - halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.y;
+
+    uint32_t n_index_x = staggered_x_domain_dimensions.x - halo_size.x - 1;
+    uint32_t n_index_y = index_x;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].y_plus;
+
+    d_velocity_y[StaggeredGridYIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
+        d_velocity_x[StaggeredGridXIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+}
+//! Dispatch with halo.x + 1 because of stagger grid
+__global__ void SyncVelocityYFromYMinus() {
+    // blockId.y indicates domain
+    // blockID.xz - dispatches over domain face
+    // threadIdx.y = halo plane
+
+    uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+    uint32_t index_y = 0;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.y;
+
+    uint32_t n_index_x = halo_size.x * 2;
+    uint32_t n_index_y = staggered_x_domain_dimensions.y - index_x - 1;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].y_minus;
+
+    d_velocity_y[StaggeredGridYIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
+        d_velocity_x[StaggeredGridXIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+}
+
+// Velocity Z technically should be dispatch over real_cells.z + 1 (which is not fit cleanly with bloc dimensions
+// but this is a border anyway and will be set to 0, so it is simply skipped
+__global__ void SyncVelocityZFromXPlus() {
+    // blockId.x indicates domain
+    // blockID.yz - dispatches over domain face
+    // threadIdx.x = halo plane
+
+    uint32_t index_x = staggered_z_domain_dimensions.x - halo_size.x;
+    uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.x;
+
+    uint32_t n_index_x = index_y;
+    uint32_t n_index_y = staggered_z_domain_dimensions.y - halo_size.y - 1;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].x_plus;
+
+    d_velocity_z[StaggeredGridZIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
+        d_velocity_z[StaggeredGridZIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+}
+__global__ void SyncVelocityZFromXMinus() {
+    // blockId.x indicates domain
+    // blockID.yz - dispatches over domain face
+    // threadIdx.x = halo plane
+
+    uint32_t index_x = 0;
+    uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.x;
+
+    uint32_t n_index_x = staggered_z_domain_dimensions.x - index_y - 1;
+    uint32_t n_index_y = halo_size.y * 2 - 1;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].x_minus;
+
+    d_velocity_z[StaggeredGridZIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
+        d_velocity_z[StaggeredGridZIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+}
+__global__ void SyncVelocityZFromYPlus() {
+    // blockId.y indicates domain
+    // blockID.xz - dispatches over domain face
+    // threadIdx.y = halo plane
+
+    uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+    uint32_t index_y = staggered_z_domain_dimensions.y - halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.y;
+
+    uint32_t n_index_x = staggered_z_domain_dimensions.x - halo_size.x - 1;
+    uint32_t n_index_y = index_x;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].y_plus;
+
+    d_velocity_z[StaggeredGridZIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
+        d_velocity_z[StaggeredGridZIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+}
+__global__ void SyncVelocityZFromYMinus() {
+    // blockId.y indicates domain
+    // blockID.xz - dispatches over domain face
+    // threadIdx.y = halo plane
+
+    uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+    uint32_t index_y = 0;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.y;
+
+    uint32_t n_index_x = halo_size.x * 2 - 1;
+    uint32_t n_index_y = staggered_z_domain_dimensions.y - index_x - 1;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].y_minus;
+
+    d_velocity_z[StaggeredGridZIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
+        d_velocity_z[StaggeredGridZIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+}
+
 template <typename T>
 cudaGraph_t CreateSyncOrthogonalXPlus(CudaDispatchBuffers* d_buffers,
                                       const CudaDispatchBuffers::SB<T> CudaDispatchBuffers::* grid) {
-    static constexpr dim3 blocks{6, SimulationDomain::real_dimensions[1] / 8, SimulationDomain::real_dimensions[2] / 8};
+    static constexpr dim3 blocks{EulerFluidSim::domains,
+                                 SimulationDomain::real_dimensions[1] / 8,
+                                 SimulationDomain::real_dimensions[2] / 8};
     static constexpr dim3 threads{halo_size.x, 8, 8};
 
     cudaGraph_t graph;
@@ -521,7 +829,9 @@ cudaGraph_t CreateSyncOrthogonalXPlus(CudaDispatchBuffers* d_buffers,
 template <typename T>
 cudaGraph_t CreateSyncOrthogonalXMinus(CudaDispatchBuffers* d_buffers,
                                        const CudaDispatchBuffers::SB<T> CudaDispatchBuffers::* grid) {
-    static constexpr dim3 blocks{6, SimulationDomain::real_dimensions[1] / 8, SimulationDomain::real_dimensions[2] / 8};
+    static constexpr dim3 blocks{EulerFluidSim::domains,
+                                 SimulationDomain::real_dimensions[1] / 8,
+                                 SimulationDomain::real_dimensions[2] / 8};
     static constexpr dim3 threads{halo_size.x, 8, 8};
 
     cudaGraph_t graph;
@@ -540,8 +850,10 @@ cudaGraph_t CreateSyncOrthogonalXMinus(CudaDispatchBuffers* d_buffers,
 template <typename T>
 cudaGraph_t CreateSyncOrthogonalYPlus(CudaDispatchBuffers* d_buffers,
                                       const CudaDispatchBuffers::SB<T> CudaDispatchBuffers::* grid) {
-    static constexpr dim3 blocks{SimulationDomain::real_dimensions[0] / 8, 6, SimulationDomain::real_dimensions[2] / 8};
-    static constexpr dim3 threads{8, halo_size.x, 8};
+    static constexpr dim3 blocks{SimulationDomain::real_dimensions[0] / 8,
+                                 EulerFluidSim::domains,
+                                 SimulationDomain::real_dimensions[2] / 8};
+    static constexpr dim3 threads{8, halo_size.y, 8};
 
     cudaGraph_t graph;
     cudaStream_t capture_stream;
@@ -559,8 +871,10 @@ cudaGraph_t CreateSyncOrthogonalYPlus(CudaDispatchBuffers* d_buffers,
 template <typename T>
 cudaGraph_t CreateSyncOrthogonalYMinus(CudaDispatchBuffers* d_buffers,
                                        const CudaDispatchBuffers::SB<T> CudaDispatchBuffers::* grid) {
-    static constexpr dim3 blocks{SimulationDomain::real_dimensions[0] / 8, 6, SimulationDomain::real_dimensions[2] / 8};
-    static constexpr dim3 threads{8, halo_size.x, 8};
+    static constexpr dim3 blocks{SimulationDomain::real_dimensions[0] / 8,
+                                 EulerFluidSim::domains,
+                                 SimulationDomain::real_dimensions[2] / 8};
+    static constexpr dim3 threads{8, halo_size.y, 8};
 
     cudaGraph_t graph;
     cudaStream_t capture_stream;
@@ -572,59 +886,6 @@ cudaGraph_t CreateSyncOrthogonalYMinus(CudaDispatchBuffers* d_buffers,
     cudaStreamEndCapture(capture_stream, &graph);
     cudaStreamDestroy(capture_stream);
 
-    return graph;
-}
-
-void SetVelocityDevicePointers(double* x, double* x_temp, double* y, double* y_temp, double* z, double* z_temp) {
-    cudaMemcpyToSymbol(d_velocity_x, &x, sizeof(double*));
-    cudaMemcpyToSymbol(d_velocity_x_temp, &x_temp, sizeof(double*));
-    cudaMemcpyToSymbol(d_velocity_y, &y, sizeof(double*));
-    cudaMemcpyToSymbol(d_velocity_y_temp, &y_temp, sizeof(double*));
-    cudaMemcpyToSymbol(d_velocity_z, &z, sizeof(double*));
-    cudaMemcpyToSymbol(d_velocity_z_temp, &z_temp, sizeof(double*));
-}
-
-__global__ void SwapVelocityBuffers() {
-    double* temp = d_velocity_x;
-    d_velocity_x = d_velocity_x_temp;
-    d_velocity_x_temp = temp;
-
-    temp = d_velocity_y;
-    d_velocity_y = d_velocity_y_temp;
-    d_velocity_y_temp = temp;
-
-    temp = d_velocity_z;
-    d_velocity_z = d_velocity_z_temp;
-    d_velocity_z_temp = temp;
-}
-
-__device__ double* GetVelocityXSegment(double* ptr, uint32_t index) {
-    return ptr + CudaDispatchBuffers::VxSB<double>::elements_padded * index;
-}
-__device__ const double* GetVelocityXSegment(const double* ptr, uint32_t index) {
-    return ptr + CudaDispatchBuffers::VxSB<double>::elements_padded * index;
-}
-__device__ double* GetVelocityYSegment(double* ptr, uint32_t index) {
-    return ptr + CudaDispatchBuffers::VySB<double>::elements_padded * index;
-}
-__device__ const double* GetVelocityYSegment(const double* ptr, uint32_t index) {
-    return ptr + CudaDispatchBuffers::VySB<double>::elements_padded * index;
-}
-__device__ double* GetVelocityZSegment(double* ptr, uint32_t index) {
-    return ptr + CudaDispatchBuffers::VzSB<double>::elements_padded * index;
-}
-__device__ const double* GetVelocityZSegment(const double* ptr, uint32_t index) {
-    return ptr + CudaDispatchBuffers::VzSB<double>::elements_padded * index;
-}
-
-cudaGraph_t CreateSwapVelocities() {
-    cudaGraph_t graph;
-    cudaStream_t capture_stream;
-    cudaStreamCreate(&capture_stream);
-
-    SwapVelocityBuffers<<<1, 1, 0, capture_stream>>>();
-
-    cudaStreamEndCapture(capture_stream, &graph);
     return graph;
 }
 
@@ -655,6 +916,131 @@ cudaGraph_t CreateSyncOrthogonal(CudaDispatchBuffers* d_buffers,
         auto child = CreateSyncOrthogonalYMinus(d_buffers, grid);
         cudaGraphAddChildGraphNode(&nodes[3], graph, nullptr, 0, child);
         cudaGraphDestroy(child);
+    }
+
+    return graph;
+}
+
+cudaGraph_t CreateSyncVelocitiesOrthogonal() {
+    cudaGraph_t graph;
+    cudaGraphCreate(&graph);
+
+    cudaGraphNode_t nodes[12];
+
+    {
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[1] / 8,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{halo_size.x + 1, 8, 8};
+        params.func = &SyncVelocityXFromXPlus;
+        cudaGraphAddKernelNode(&nodes[0], graph, nullptr, 0, &params);
+    }
+    {
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[1] / 8,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{halo_size.x, 8, 8};
+        params.func = &SyncVelocityXFromXMinus;
+        cudaGraphAddKernelNode(&nodes[1], graph, nullptr, 0, &params);
+    }
+    {
+        // +1 for x dimension because of MAC grid
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8 + 1,
+                              EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{8, halo_size.y, 8};
+        params.func = &SyncVelocityXFromYPlus;
+        cudaGraphAddKernelNode(&nodes[2], graph, nullptr, 0, &params);
+    }
+    {
+        // +1 for x dimension because of MAC grid
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8 + 1,
+                              EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{8, halo_size.y, 8};
+        params.func = &SyncVelocityXFromYMinus;
+        cudaGraphAddKernelNode(&nodes[3], graph, nullptr, 0, &params);
+    }
+
+    {
+        // +1 for y dimension because of MAC grid
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[1] / 8 + 1,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{halo_size.x, 8, 8};
+        params.func = &SyncVelocityYFromXPlus;
+        cudaGraphAddKernelNode(&nodes[4], graph, nullptr, 0, &params);
+    }
+    {
+        // +1 for y dimension because of MAC grid
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[1] / 8 + 1,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{halo_size.x, 8, 8};
+        params.func = &SyncVelocityYFromXMinus;
+        cudaGraphAddKernelNode(&nodes[5], graph, nullptr, 0, &params);
+    }
+    {
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8,
+                              EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{8, halo_size.y, 8};
+        params.func = &SyncVelocityYFromYPlus;
+        cudaGraphAddKernelNode(&nodes[6], graph, nullptr, 0, &params);
+    }
+    {
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8,
+                              EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{8, halo_size.y + 1, 8};
+        params.func = &SyncVelocityYFromYMinus;
+        cudaGraphAddKernelNode(&nodes[7], graph, nullptr, 0, &params);
+    }
+
+    // Technically there should be +1 on every z direction, but it falls on the boundary and will be set to 0 anyway
+    {
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[1] / 8,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{halo_size.x, 8, 8};
+        params.func = &SyncVelocityZFromXPlus;
+        cudaGraphAddKernelNode(&nodes[8], graph, nullptr, 0, &params);
+    }
+    {
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[1] / 8,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{halo_size.x, 8, 8};
+        params.func = &SyncVelocityZFromXMinus;
+        cudaGraphAddKernelNode(&nodes[9], graph, nullptr, 0, &params);
+    }
+    {
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8,
+                              EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{8, halo_size.y, 8};
+        params.func = &SyncVelocityZFromYPlus;
+        cudaGraphAddKernelNode(&nodes[10], graph, nullptr, 0, &params);
+    }
+    {
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8,
+                              EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{8, halo_size.y, 8};
+        params.func = &SyncVelocityZFromYMinus;
+        cudaGraphAddKernelNode(&nodes[11], graph, nullptr, 0, &params);
     }
 
     return graph;
@@ -1033,12 +1419,12 @@ __global__ void CalculateDivergence(T* divergence, uint32_t segment) {
         int flowPosZ = !IsSolidCell(z + 1);
         int flowNegZ = !IsSolidCell(z - 1);
 
-        T velocityX_POS = vel_x[StaggeredXGridIndex(x + 1, y, z)] * flowPosX;
-        T velocityX_NEG = vel_x[StaggeredXGridIndex(x, y, z)] * flowNegX;
-        T velocityY_POS = vel_y[StaggeredYGridIndex(x, y + 1, z)] * flowPosY;
-        T velocityY_NEG = vel_y[StaggeredYGridIndex(x, y, z)] * flowNegY;
-        T velocityZ_POS = vel_z[StaggeredZGridIndex(x, y, z + 1)] * flowPosZ;
-        T velocityZ_NEG = vel_z[StaggeredZGridIndex(x, y, z)] * flowNegZ;
+        T velocityX_POS = vel_x[GridIndex<staggered_x_domain_dimensions>(x + 1, y, z)] * flowPosX;
+        T velocityX_NEG = vel_x[GridIndex<staggered_x_domain_dimensions>(x, y, z)] * flowNegX;
+        T velocityY_POS = vel_y[GridIndex<staggered_y_domain_dimensions>(x, y + 1, z)] * flowPosY;
+        T velocityY_NEG = vel_y[GridIndex<staggered_y_domain_dimensions>(x, y, z)] * flowNegY;
+        T velocityZ_POS = vel_z[GridIndex<staggered_z_domain_dimensions>(x, y, z + 1)] * flowPosZ;
+        T velocityZ_NEG = vel_z[GridIndex<staggered_z_domain_dimensions>(x, y, z)] * flowNegZ;
 
         T gradientX = velocityX_POS - velocityX_NEG;
         T gradientY = velocityY_POS - velocityY_NEG;
@@ -1072,6 +1458,58 @@ cudaGraph_t CreateCalculateDivergence(CudaDispatchBuffers* d_buffers) {
         CreateCalculateDomainsDivergence(&children[i], d_buffers, i);
         cudaGraphAddChildGraphNode(&nodes[i], graph, nullptr, 0, children[i]);
         cudaGraphDestroy(children[i]);
+    }
+
+    return graph;
+}
+
+__device__ bool IsSolidCell(uint32_t z) { return z == 0 || z + 1 >= domain_dimensions.z; }
+
+// dispatched over real cells
+// TODO: cache pressure into shared memory
+__global__ void UpdateVelocities(const double* d_pressure, uint32_t w) {
+    static constexpr double k =
+        SimulationConstants::fixed_time_step / (SimulationConstants::density * SimulationConstants::scale);
+
+    uint32_t x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+    uint32_t y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+    uint32_t z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+
+    if (IsSolidCell(z)) {
+        d_velocity_x[StaggeredGridXIndex(x, y, z, w)] = 0;
+        d_velocity_x[StaggeredGridXIndex(x + 1, y, z, w)] = 0;
+        d_velocity_y[StaggeredGridYIndex(x, y, z, w)] = 0;
+        d_velocity_y[StaggeredGridYIndex(x, y + 1, z, w)] = 0;
+        d_velocity_z[StaggeredGridZIndex(x, y, z, w)] = 0;
+        d_velocity_z[StaggeredGridZIndex(x, y, z + 1, w)] = 0;
+    } else {
+        d_velocity_x[StaggeredGridXIndex(x + 1, y, z, w)] -=
+            k * (d_pressure[GridIndex(x + 1, y, z, w)] - d_pressure[GridIndex(x, y, z, w)]);
+        d_velocity_y[StaggeredGridYIndex(x, y + 1, z, w)] -=
+            k * (d_pressure[GridIndex(x, y + 1, z, w)] - d_pressure[GridIndex(x, y, z, w)]);
+        if (!IsSolidCell(z + 1)) {
+            d_velocity_z[StaggeredGridZIndex(x, y, z + 1, w)] -=
+                k * (d_pressure[GridIndex(x, y, z + 1, w)] - d_pressure[GridIndex(x, y, z, w)]);
+        }
+    }
+}
+
+cudaGraph_t CreateUpdateVelocities(CudaDispatchBuffers* d_buffers) {
+    cudaGraph_t graph;
+    cudaGraphCreate(&graph);
+
+    cudaGraphNode_t nodes[EulerFluidSim::domains];
+
+    for (uint32_t domain_index = 0; domain_index < EulerFluidSim::domains; ++domain_index) {
+        void* args[2];
+        args[0] = &d_buffers->pressure.ptr;
+        args[1] = &domain_index;
+        cudaKernelNodeParams params{};
+        params.gridDim = grid_dimensions;
+        params.blockDim = block_dimensions;
+        params.func = &UpdateVelocities;
+        params.kernelParams = args;
+        cudaGraphAddKernelNode(&nodes[domain_index], graph, nullptr, 0, &params);
     }
 
     return graph;

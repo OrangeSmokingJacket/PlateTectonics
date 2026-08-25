@@ -9,9 +9,13 @@ cudaGraph_t CreateSwapVelocities();
 cudaGraph_t CreateSyncOrthogonal(CudaDispatchBuffers* d_buffers,
                                  const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* grid);
 
+cudaGraph_t CreateSyncVelocitiesOrthogonal();
+
 cudaGraph_t CreatePCG_Solver(CudaDispatchBuffers* d_buffers);
 
 cudaGraph_t CreateCalculateDivergence(CudaDispatchBuffers* d_buffers);
+
+cudaGraph_t CreateUpdateVelocities(CudaDispatchBuffers* d_buffers);
 
 // Temp H2D and D2H transfers
 double* GetVelX();

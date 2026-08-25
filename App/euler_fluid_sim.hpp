@@ -106,7 +106,10 @@ struct CudaGraphs {
     cudaStream_t stream;
 
     cudaGraphExec_t calculate_divergence;
+    cudaGraphExec_t update_velocities;
     cudaGraphExec_t sync_divergence;
+    cudaGraphExec_t sync_pressure;
+    cudaGraphExec_t sync_velocities;
     cudaGraphExec_t PCG_Solver;
 };
 

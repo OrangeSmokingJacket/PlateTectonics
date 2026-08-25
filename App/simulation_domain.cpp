@@ -104,32 +104,6 @@ void SimulationDomain::CalculatePreconditioner() {
     }
 }
 
-void SimulationDomain::UpdateVelocities() {
-    static constexpr double k =
-        SimulationConstants::fixed_time_step / (SimulationConstants::density * SimulationConstants::scale);
-
-    for (uint64_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
-        for (uint64_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (uint64_t z = 0; z < dimensions.z; ++z) {
-                if (EulerFluidSim::IsSolidCell(z)) {
-                    (*velocities_x_)[x][y][z] = 0;
-                    (*velocities_x_)[x + 1][y][z] = 0;
-                    (*velocities_y_)[x][y][z] = 0;
-                    (*velocities_y_)[x][y + 1][z] = 0;
-                    (*velocities_z_)[x][y][z] = 0;
-                    (*velocities_z_)[x][y][z + 1] = 0;
-                    continue;
-                }
-                (*velocities_x_)[x + 1][y][z] -= k * ((*cell_pressure_)[x + 1][y][z] - (*cell_pressure_)[x][y][z]);
-                (*velocities_y_)[x][y + 1][z] -= k * ((*cell_pressure_)[x][y + 1][z] - (*cell_pressure_)[x][y][z]);
-                if (!EulerFluidSim::IsSolidCell(z + 1)) {
-                    (*velocities_z_)[x][y][z + 1] -= k * ((*cell_pressure_)[x][y][z + 1] - (*cell_pressure_)[x][y][z]);
-                }
-            }
-        }
-    }
-}
-
 void SimulationDomain::ApplyBuoyancy(const EulerFluidSim* simulation) {
     // skip walls, except upper and lower ones
     // k works only with const thermal_expansion_coefficient
