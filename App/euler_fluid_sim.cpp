@@ -434,6 +434,11 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
         cudaGraphDestroy(graph);
     }
     {
+        auto graph = CreateAdvectVelocities();
+        cudaGraphInstantiate(&cuda_graphs_.advect_velocities, graph, 0);
+        cudaGraphDestroy(graph);
+    }
+    {
         auto graph = CreateSyncOrthogonal(&cuda_buffers_, &CudaDispatchBuffers::divergence);
         cudaGraphInstantiate(&cuda_graphs_.sync_divergence, graph, 0);
         cudaGraphDestroy(graph);
@@ -498,6 +503,7 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
 EulerFluidSim::~EulerFluidSim() {
     cudaGraphExecDestroy(cuda_graphs_.calculate_divergence);
     cudaGraphExecDestroy(cuda_graphs_.update_velocities);
+    cudaGraphExecDestroy(cuda_graphs_.advect_velocities);
     cudaGraphExecDestroy(cuda_graphs_.sync_divergence);
     cudaGraphExecDestroy(cuda_graphs_.sync_pressure);
     cudaGraphExecDestroy(cuda_graphs_.sync_velocities);
@@ -539,21 +545,52 @@ EulerFluidSim::~EulerFluidSim() {
 
 void EulerFluidSim::Update(float delta_time) {
     // TODO: Combine temperature advection and velocity advection to reduce sampling and sync calls
-    // Advection
-    {
-        std::latch sync_latch{domains};
-
-        for (size_t i = 0; i < domains; ++i) {
-            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-            thread_pool_->Enqueue([domain_ref, &sync_latch]() {
-                domain_ref.get().AdvectVelocities();
-                sync_latch.count_down();
-            });
-        }
-
-        sync_latch.wait();
+    // Temp memcpy from host
+    for (size_t i = 0; i < domains; ++i) {
+        cudaMemcpyAsync(GetVelX() + CudaDispatchBuffers::VxSB<double>::elements_padded * i,
+                        (*domains_)[i].velocities_x_->flat_data(),
+                        SimulationDomain::GridXValues::memory_footprint,
+                        cudaMemcpyHostToDevice,
+                        cuda_graphs_.stream);
+        cudaMemcpyAsync(GetVelY() + CudaDispatchBuffers::VySB<double>::elements_padded * i,
+                        (*domains_)[i].velocities_y_->flat_data(),
+                        SimulationDomain::GridYValues::memory_footprint,
+                        cudaMemcpyHostToDevice,
+                        cuda_graphs_.stream);
+        cudaMemcpyAsync(GetVelZ() + CudaDispatchBuffers::VzSB<double>::elements_padded * i,
+                        (*domains_)[i].velocities_z_->flat_data(),
+                        SimulationDomain::GridZValues::memory_footprint,
+                        cudaMemcpyHostToDevice,
+                        cuda_graphs_.stream);
     }
-    SyncVelocities();
+    cudaStreamSynchronize(cuda_graphs_.stream);
+
+    cudaGraphLaunch(cuda_graphs_.advect_velocities, cuda_graphs_.stream);
+    cudaStreamSynchronize(cuda_graphs_.stream);
+
+    cudaGraphLaunch(cuda_graphs_.sync_velocities, cuda_graphs_.stream);
+    cudaStreamSynchronize(cuda_graphs_.stream);
+
+    // Temp memcpy to host
+    for (size_t i = 0; i < domains; ++i) {
+        cudaMemcpyAsync((*domains_)[i].velocities_x_->flat_data(),
+                        GetVelX() + CudaDispatchBuffers::VxSB<double>::elements_padded * i,
+                        SimulationDomain::GridXValues::memory_footprint,
+                        cudaMemcpyDeviceToHost,
+                        cuda_graphs_.stream);
+        cudaMemcpyAsync((*domains_)[i].velocities_y_->flat_data(),
+                        GetVelY() + CudaDispatchBuffers::VySB<double>::elements_padded * i,
+                        SimulationDomain::GridYValues::memory_footprint,
+                        cudaMemcpyDeviceToHost,
+                        cuda_graphs_.stream);
+        cudaMemcpyAsync((*domains_)[i].velocities_z_->flat_data(),
+                        GetVelZ() + CudaDispatchBuffers::VzSB<double>::elements_padded * i,
+                        SimulationDomain::GridZValues::memory_footprint,
+                        cudaMemcpyDeviceToHost,
+                        cuda_graphs_.stream);
+    }
+    cudaStreamSynchronize(cuda_graphs_.stream);
+
     {
         std::latch sync_latch{domains};
 
@@ -852,6 +889,7 @@ void EulerFluidSim::ProjectVelocities() {
                         cudaMemcpyDeviceToHost,
                         cuda_graphs_.stream);
     }
+    cudaStreamSynchronize(cuda_graphs_.stream);
     {
         auto err = cudaGetLastError();
         assert(err == cudaSuccess);

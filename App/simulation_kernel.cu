@@ -1,5 +1,7 @@
 #include "simulation_kernel.hpp"
 
+#include <type_traits>
+
 // max divergence and dot_product
 __device__ __managed__ double* d_velocity_x = nullptr;
 __device__ __managed__ double* d_velocity_x_temp = nullptr;
@@ -70,6 +72,21 @@ constexpr dim3 halo_size{SimulationDomain::halo_size[0],
                          SimulationDomain::halo_size[2]};
 
 constexpr uint32_t z_border_size = SimulationDomain::border_size;
+
+template <size_t, typename F, size_t... I>
+__host__ __device__ void unrolled_for_impl(F&& f, std::index_sequence<I...>) {
+    (f(std::integral_constant<size_t, I>{}), ...);
+}
+
+template <size_t N, typename F>
+__host__ __device__ void unrolled_for(F&& f) {
+    unrolled_for_impl<N>(std::forward<F>(f), std::make_index_sequence<N>{});
+}
+
+template <math::vec3<float> Offset, uint32_t AxisIndex>
+__host__ __device__ constexpr ValueType GetOffset() {
+    return Offset[AxisIndex];
+}
 
 template <dim3 GridDimensions = domain_dimensions>
 __device__ uint32_t GridIndex(uint32_t x, uint32_t y, uint32_t z) {
@@ -1511,6 +1528,227 @@ cudaGraph_t CreateUpdateVelocities(CudaDispatchBuffers* d_buffers) {
         params.kernelParams = args;
         cudaGraphAddKernelNode(&nodes[domain_index], graph, nullptr, 0, &params);
     }
+
+    return graph;
+}
+
+// Works since scaling us uniform
+template <typename T>
+__device__ T NormalizePosition(T axis_pos) {
+    return axis_pos / SimulationConstants::scale;
+}
+template <typename T>
+__device__ T DenormalizePosition(T axis_pos) {
+    return axis_pos * SimulationConstants::scale;
+}
+
+template <typename T>
+__device__ T lerp(T v0, T v1, T t) {
+    return v0 * (T{1} - t) + v1 * t;
+}
+// TODO: all intermediate values can be done in parallel and cached
+__device__ ValueType TrilinearInterpolation(const ValueType* grid,
+                                            uint32_t (*GridIndexPtr)(uint32_t, uint32_t, uint32_t, uint32_t),
+                                            ValueType pos_x,
+                                            ValueType pos_y,
+                                            ValueType pos_z,
+                                            uint32_t w) {
+    uint32_t x = floor(pos_x);
+    uint32_t y = floor(pos_y);
+    uint32_t z = floor(pos_z);
+
+    ValueType fraction_x = pos_x - static_cast<ValueType>(x);
+    ValueType fraction_y = pos_y - static_cast<ValueType>(y);
+    ValueType fraction_z = pos_z - static_cast<ValueType>(z);
+
+    // Actual interpolation
+    ValueType c00 = lerp(grid[GridIndexPtr(x, y, z, w)], grid[GridIndexPtr(x + 1, y, z, w)], fraction_x);
+    ValueType c01 = lerp(grid[GridIndexPtr(x, y, z + 1, w)], grid[GridIndexPtr(x + 1, y, z + 1, w)], fraction_x);
+    ValueType c10 = lerp(grid[GridIndexPtr(x, y + 1, z, w)], grid[GridIndexPtr(x + 1, y + 1, z, w)], fraction_x);
+    ValueType c11 =
+        lerp(grid[GridIndexPtr(x, y + 1, z + 1, w)], grid[GridIndexPtr(x + 1, y + 1, z + 1, w)], fraction_x);
+
+    ValueType c0 = lerp(c00, c10, fraction_y);
+    ValueType c1 = lerp(c01, c11, fraction_y);
+
+    return lerp(c0, c1, fraction_z);
+}
+
+// dispatched over real cells
+__global__ void AdvectVelocitiesX(uint32_t w) {
+    if (blockIdx.x * blockDim.x + threadIdx.x < staggered_x_domain_dimensions.x - halo_size.x * 2) {
+        uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+        uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+        uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + z_border_size;
+
+        ValueType n_pos[3];
+        ValueType prev_pos[3];
+        n_pos[0] = static_cast<ValueType>(index_x) + GetOffset<VelocityXGridOffset, 0>();
+        n_pos[1] = static_cast<ValueType>(index_y) + GetOffset<VelocityXGridOffset, 1>();
+        n_pos[2] = static_cast<ValueType>(index_z) + GetOffset<VelocityXGridOffset, 2>();
+
+        ValueType velocity[3];
+        velocity[0] = TrilinearInterpolation(d_velocity_x,
+                                             &StaggeredGridXIndex,
+                                             n_pos[0] - GetOffset<VelocityXGridOffset, 0>(),
+                                             n_pos[1] - GetOffset<VelocityXGridOffset, 1>(),
+                                             n_pos[2] - GetOffset<VelocityXGridOffset, 2>(),
+                                             w);
+        velocity[1] = TrilinearInterpolation(d_velocity_y,
+                                             &StaggeredGridYIndex,
+                                             n_pos[0] - GetOffset<VelocityYGridOffset, 0>(),
+                                             n_pos[1] - GetOffset<VelocityYGridOffset, 1>(),
+                                             n_pos[2] - GetOffset<VelocityYGridOffset, 2>(),
+                                             w);
+        velocity[2] = TrilinearInterpolation(d_velocity_z,
+                                             &StaggeredGridZIndex,
+                                             n_pos[0] - GetOffset<VelocityZGridOffset, 0>(),
+                                             n_pos[1] - GetOffset<VelocityZGridOffset, 1>(),
+                                             n_pos[2] - GetOffset<VelocityZGridOffset, 2>(),
+                                             w);
+
+        unrolled_for<3>([&](auto ic) {
+            constexpr size_t i = decltype(ic)::value;
+            prev_pos[i] = DenormalizePosition(n_pos[i]) - velocity[i] * SimulationConstants::fixed_time_step;
+            n_pos[i] = NormalizePosition(prev_pos[i]) - GetOffset<VelocityXGridOffset, i>();
+        });
+
+        d_velocity_x_temp[StaggeredGridXIndex(index_x, index_y, index_z, w)] =
+            TrilinearInterpolation(d_velocity_x, &StaggeredGridXIndex, n_pos[0], n_pos[1], n_pos[2], w);
+    }
+}
+
+// dispatched over real cells
+__global__ void AdvectVelocitiesY(uint32_t w) {
+    if (blockIdx.y * blockDim.y + threadIdx.y < staggered_y_domain_dimensions.y - halo_size.y * 2) {
+        uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+        uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+        uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + z_border_size;
+
+        ValueType n_pos[3];
+        ValueType prev_pos[3];
+        n_pos[0] = static_cast<ValueType>(index_x) + GetOffset<VelocityYGridOffset, 0>();
+        n_pos[1] = static_cast<ValueType>(index_y) + GetOffset<VelocityYGridOffset, 1>();
+        n_pos[2] = static_cast<ValueType>(index_z) + GetOffset<VelocityYGridOffset, 2>();
+
+        ValueType velocity[3];
+        velocity[0] = TrilinearInterpolation(d_velocity_x,
+                                             &StaggeredGridXIndex,
+                                             n_pos[0] - GetOffset<VelocityXGridOffset, 0>(),
+                                             n_pos[1] - GetOffset<VelocityXGridOffset, 1>(),
+                                             n_pos[2] - GetOffset<VelocityXGridOffset, 2>(),
+                                             w);
+        velocity[1] = TrilinearInterpolation(d_velocity_y,
+                                             &StaggeredGridYIndex,
+                                             n_pos[0] - GetOffset<VelocityYGridOffset, 0>(),
+                                             n_pos[1] - GetOffset<VelocityYGridOffset, 1>(),
+                                             n_pos[2] - GetOffset<VelocityYGridOffset, 2>(),
+                                             w);
+        velocity[2] = TrilinearInterpolation(d_velocity_z,
+                                             &StaggeredGridZIndex,
+                                             n_pos[0] - GetOffset<VelocityZGridOffset, 0>(),
+                                             n_pos[1] - GetOffset<VelocityZGridOffset, 1>(),
+                                             n_pos[2] - GetOffset<VelocityZGridOffset, 2>(),
+                                             w);
+
+        unrolled_for<3>([&](auto ic) {
+            constexpr size_t i = decltype(ic)::value;
+            prev_pos[i] = DenormalizePosition(n_pos[i]) - velocity[i] * SimulationConstants::fixed_time_step;
+            n_pos[i] = NormalizePosition(prev_pos[i]) - GetOffset<VelocityYGridOffset, i>();
+        });
+
+        d_velocity_y_temp[StaggeredGridYIndex(index_x, index_y, index_z, w)] =
+            TrilinearInterpolation(d_velocity_y, &StaggeredGridYIndex, n_pos[0], n_pos[1], n_pos[2], w);
+    }
+}
+
+// dispatched over real cells
+__global__ void AdvectVelocitiesZ(uint32_t w) {
+    if (blockIdx.z * blockDim.z + threadIdx.z < staggered_z_domain_dimensions.z - z_border_size * 2) {
+        uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+        uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+        uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + z_border_size;
+
+        ValueType n_pos[3];
+        ValueType prev_pos[3];
+        n_pos[0] = static_cast<ValueType>(index_x) + GetOffset<VelocityZGridOffset, 0>();
+        n_pos[1] = static_cast<ValueType>(index_y) + GetOffset<VelocityZGridOffset, 1>();
+        n_pos[2] = static_cast<ValueType>(index_z) + GetOffset<VelocityZGridOffset, 2>();
+
+        ValueType velocity[3];
+        velocity[0] = TrilinearInterpolation(d_velocity_x,
+                                             &StaggeredGridXIndex,
+                                             n_pos[0] - GetOffset<VelocityXGridOffset, 0>(),
+                                             n_pos[1] - GetOffset<VelocityXGridOffset, 1>(),
+                                             n_pos[2] - GetOffset<VelocityXGridOffset, 2>(),
+                                             w);
+        velocity[1] = TrilinearInterpolation(d_velocity_y,
+                                             &StaggeredGridYIndex,
+                                             n_pos[0] - GetOffset<VelocityYGridOffset, 0>(),
+                                             n_pos[1] - GetOffset<VelocityYGridOffset, 1>(),
+                                             n_pos[2] - GetOffset<VelocityYGridOffset, 2>(),
+                                             w);
+        velocity[2] = TrilinearInterpolation(d_velocity_z,
+                                             &StaggeredGridZIndex,
+                                             n_pos[0] - GetOffset<VelocityZGridOffset, 0>(),
+                                             n_pos[1] - GetOffset<VelocityZGridOffset, 1>(),
+                                             n_pos[2] - GetOffset<VelocityZGridOffset, 2>(),
+                                             w);
+
+        unrolled_for<3>([&](auto ic) {
+            constexpr size_t i = decltype(ic)::value;
+            prev_pos[i] = DenormalizePosition(n_pos[i]) - velocity[i] * SimulationConstants::fixed_time_step;
+            n_pos[i] = NormalizePosition(prev_pos[i]) - GetOffset<VelocityZGridOffset, i>();
+        });
+
+        d_velocity_z_temp[StaggeredGridZIndex(index_x, index_y, index_z, w)] =
+            TrilinearInterpolation(d_velocity_z, &StaggeredGridZIndex, n_pos[0], n_pos[1], n_pos[2], w);
+    }
+}
+
+cudaGraph_t CreateAdvectVelocities() {
+    cudaGraph_t graph;
+    cudaGraphCreate(&graph);
+
+    cudaGraphNode_t nodes[EulerFluidSim::domains * 3 + 1];
+
+    for (uint32_t domain_index = 0; domain_index < EulerFluidSim::domains; ++domain_index) {
+        void* args[1];
+        args[0] = &domain_index;
+        cudaKernelNodeParams params{};
+        params.blockDim = block_dimensions;
+        params.kernelParams = args;
+
+        {
+            params.func = &AdvectVelocitiesX;
+            params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8 + 1,
+                                  SimulationDomain::real_dimensions[1] / 8,
+                                  SimulationDomain::real_dimensions[2] / 8};
+            cudaGraphAddKernelNode(&nodes[domain_index], graph, nullptr, 0, &params);
+        }
+        {
+            params.func = &AdvectVelocitiesY;
+            params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8,
+                                  SimulationDomain::real_dimensions[1] / 8 + 1,
+                                  SimulationDomain::real_dimensions[2] / 8};
+            cudaGraphAddKernelNode(&nodes[domain_index + EulerFluidSim::domains], graph, nullptr, 0, &params);
+        }
+        {
+            params.func = &AdvectVelocitiesZ;
+            params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8,
+                                  SimulationDomain::real_dimensions[1] / 8,
+                                  SimulationDomain::real_dimensions[2] / 8 + 1};
+            cudaGraphAddKernelNode(&nodes[domain_index + EulerFluidSim::domains * 2], graph, nullptr, 0, &params);
+        }
+    }
+
+    cudaKernelNodeParams params{};
+    params.gridDim = 1;
+    params.blockDim = 1;
+    params.kernelParams = nullptr;
+    params.func = &SwapVelocityBuffers;
+
+    cudaGraphAddKernelNode(&nodes[EulerFluidSim::domains * 3], graph, &nodes[0], EulerFluidSim::domains * 3, &params);
 
     return graph;
 }

@@ -17,6 +17,8 @@ cudaGraph_t CreateCalculateDivergence(CudaDispatchBuffers* d_buffers);
 
 cudaGraph_t CreateUpdateVelocities(CudaDispatchBuffers* d_buffers);
 
+cudaGraph_t CreateAdvectVelocities();
+
 // Temp H2D and D2H transfers
 double* GetVelX();
 double* GetVelY();
