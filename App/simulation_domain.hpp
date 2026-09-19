@@ -85,7 +85,6 @@ struct SimulationDomain {
     void CalculateCoefficients();
     void CalculatePreconditioner();
     void ApplyBuoyancy(const EulerFluidSim* simulation);
-    void AdvectTemperature();
 
     [[nodiscard]] math::vec3<float> SampleVelocity(const math::vec3<float>& nPos) const;
 

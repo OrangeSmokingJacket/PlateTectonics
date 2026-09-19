@@ -357,6 +357,10 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     cudaMalloc(&cuda_buffers_.search.ptr, cuda_buffers_.search.allocation_size);
     cudaMalloc(&cuda_buffers_.coefficients.ptr, cuda_buffers_.coefficients.allocation_size);
     cudaMalloc(&cuda_buffers_.preconditioner.ptr, cuda_buffers_.preconditioner.allocation_size);
+    cudaMalloc(&cuda_buffers_.temperature.b1, cuda_buffers_.temperature.allocation_size);
+    cudaMalloc(&cuda_buffers_.temperature.b2, cuda_buffers_.temperature.allocation_size);
+    cuda_buffers_.temperature.front_buffer = &cuda_buffers_.temperature.b1;
+    cuda_buffers_.temperature.back_buffer = &cuda_buffers_.temperature.b2;
     cudaMalloc(&cuda_buffers_.velocities_x.b1, cuda_buffers_.velocities_x.allocation_size);
     cudaMalloc(&cuda_buffers_.velocities_x.b2, cuda_buffers_.velocities_x.allocation_size);
     cuda_buffers_.velocities_x.front_buffer = &cuda_buffers_.velocities_x.b1;
@@ -384,6 +388,12 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
                          SimulationDomain::GridValues::memory_footprint,
                          cudaHostRegisterDefault);
         cudaHostRegister(domain.search_->flat_begin(),
+                         SimulationDomain::GridValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        cudaHostRegister(domain.cell_temperature_->flat_begin(),
+                         SimulationDomain::GridValues::memory_footprint,
+                         cudaHostRegisterDefault);
+        cudaHostRegister(domain.cell_temperature_temp_->flat_begin(),
                          SimulationDomain::GridValues::memory_footprint,
                          cudaHostRegisterDefault);
         // TODO: there is no need now to store them in main memory, since they do not change at runtime (at least now)
@@ -414,7 +424,9 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
                          cudaHostRegisterDefault);
     }
 
-    SetVelocityDevicePointers(cuda_buffers_.velocities_x.b1,
+    SetVelocityDevicePointers(cuda_buffers_.temperature.b1,
+                              cuda_buffers_.temperature.b2,
+                              cuda_buffers_.velocities_x.b1,
                               cuda_buffers_.velocities_x.b2,
                               cuda_buffers_.velocities_y.b1,
                               cuda_buffers_.velocities_y.b2,
@@ -434,6 +446,11 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
         cudaGraphDestroy(graph);
     }
     {
+        auto graph = CreateAdvectTemperature();
+        cudaGraphInstantiate(&cuda_graphs_.advect_temperature, graph, 0);
+        cudaGraphDestroy(graph);
+    }
+    {
         auto graph = CreateAdvectVelocities();
         cudaGraphInstantiate(&cuda_graphs_.advect_velocities, graph, 0);
         cudaGraphDestroy(graph);
@@ -446,6 +463,11 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     {
         auto graph = CreateSyncOrthogonal(&cuda_buffers_, &CudaDispatchBuffers::pressure);
         cudaGraphInstantiate(&cuda_graphs_.sync_pressure, graph, 0);
+        cudaGraphDestroy(graph);
+    }
+    {
+        auto graph = CreateSyncTemperatureOrthogonal();
+        cudaGraphInstantiate(&cuda_graphs_.sync_temperature, graph, 0);
         cudaGraphDestroy(graph);
     }
     {
@@ -503,9 +525,11 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
 EulerFluidSim::~EulerFluidSim() {
     cudaGraphExecDestroy(cuda_graphs_.calculate_divergence);
     cudaGraphExecDestroy(cuda_graphs_.update_velocities);
+    cudaGraphExecDestroy(cuda_graphs_.advect_temperature);
     cudaGraphExecDestroy(cuda_graphs_.advect_velocities);
     cudaGraphExecDestroy(cuda_graphs_.sync_divergence);
     cudaGraphExecDestroy(cuda_graphs_.sync_pressure);
+    cudaGraphExecDestroy(cuda_graphs_.sync_temperature);
     cudaGraphExecDestroy(cuda_graphs_.sync_velocities);
     cudaGraphExecDestroy(cuda_graphs_.PCG_Solver);
 
@@ -517,6 +541,8 @@ EulerFluidSim::~EulerFluidSim() {
         cudaHostUnregister(domain.search_->flat_begin());
         cudaHostUnregister(domain.coefficients_->flat_begin());
         cudaHostUnregister(domain.preconditioner_->flat_begin());
+        cudaHostUnregister(domain.cell_temperature_->flat_begin());
+        cudaHostUnregister(domain.cell_temperature_temp_->flat_begin());
         cudaHostUnregister(domain.velocities_x_->flat_begin());
         cudaHostUnregister(domain.velocities_y_->flat_begin());
         cudaHostUnregister(domain.velocities_z_->flat_begin());
@@ -533,6 +559,8 @@ EulerFluidSim::~EulerFluidSim() {
     cudaFree(cuda_buffers_.search.ptr);
     cudaFree(cuda_buffers_.coefficients.ptr);
     cudaFree(cuda_buffers_.preconditioner.ptr);
+    cudaFree(cuda_buffers_.temperature.b1);
+    cudaFree(cuda_buffers_.temperature.b2);
     cudaFree(cuda_buffers_.velocities_x.b1);
     cudaFree(cuda_buffers_.velocities_x.b2);
     cudaFree(cuda_buffers_.velocities_y.b1);
@@ -562,13 +590,20 @@ void EulerFluidSim::Update(float delta_time) {
                         SimulationDomain::GridZValues::memory_footprint,
                         cudaMemcpyHostToDevice,
                         cuda_graphs_.stream);
+        cudaMemcpyAsync(GetTemperature() + CudaDispatchBuffers::GridSB<double>::elements_padded * i,
+                        (*domains_)[i].cell_temperature_->flat_data(),
+                        SimulationDomain::GridValues::memory_footprint,
+                        cudaMemcpyHostToDevice,
+                        cuda_graphs_.stream);
     }
     cudaStreamSynchronize(cuda_graphs_.stream);
 
     cudaGraphLaunch(cuda_graphs_.advect_velocities, cuda_graphs_.stream);
+    cudaGraphLaunch(cuda_graphs_.advect_temperature, cuda_graphs_.stream);
     cudaStreamSynchronize(cuda_graphs_.stream);
 
     cudaGraphLaunch(cuda_graphs_.sync_velocities, cuda_graphs_.stream);
+    cudaGraphLaunch(cuda_graphs_.sync_temperature, cuda_graphs_.stream);
     cudaStreamSynchronize(cuda_graphs_.stream);
 
     // Temp memcpy to host
@@ -588,23 +623,14 @@ void EulerFluidSim::Update(float delta_time) {
                         SimulationDomain::GridZValues::memory_footprint,
                         cudaMemcpyDeviceToHost,
                         cuda_graphs_.stream);
+        cudaMemcpyAsync((*domains_)[i].cell_temperature_->flat_data(),
+                        GetTemperature() + CudaDispatchBuffers::GridSB<double>::elements_padded * i,
+                        SimulationDomain::GridValues::memory_footprint,
+                        cudaMemcpyDeviceToHost,
+                        cuda_graphs_.stream);
     }
     cudaStreamSynchronize(cuda_graphs_.stream);
 
-    {
-        std::latch sync_latch{domains};
-
-        for (size_t i = 0; i < domains; ++i) {
-            std::reference_wrapper<SimulationDomain> domain_ref = (*domains_)[i];
-            thread_pool_->Enqueue([domain_ref, &sync_latch]() {
-                domain_ref.get().AdvectTemperature();
-                sync_latch.count_down();
-            });
-        }
-
-        sync_latch.wait();
-    }
-    SyncGridValues(&SimulationDomain::cell_temperature_);
     // Forces
     {
         std::latch sync_latch{domains};

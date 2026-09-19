@@ -2,13 +2,20 @@
 
 #include "euler_fluid_sim.hpp"
 
-void SetVelocityDevicePointers(double* x, double* x_temp, double* y, double* y_temp, double* z, double* z_temp);
+void SetVelocityDevicePointers(double* temperature,
+                               double* temperature_temp,
+                               double* x,
+                               double* x_temp,
+                               double* y,
+                               double* y_temp,
+                               double* z,
+                               double* z_temp);
 
 cudaGraph_t CreateSwapVelocities();
 
 cudaGraph_t CreateSyncOrthogonal(CudaDispatchBuffers* d_buffers,
                                  const CudaDispatchBuffers::SB<double> CudaDispatchBuffers::* grid);
-
+cudaGraph_t CreateSyncTemperatureOrthogonal();
 cudaGraph_t CreateSyncVelocitiesOrthogonal();
 
 cudaGraph_t CreatePCG_Solver(CudaDispatchBuffers* d_buffers);
@@ -17,9 +24,11 @@ cudaGraph_t CreateCalculateDivergence(CudaDispatchBuffers* d_buffers);
 
 cudaGraph_t CreateUpdateVelocities(CudaDispatchBuffers* d_buffers);
 
+cudaGraph_t CreateAdvectTemperature();
 cudaGraph_t CreateAdvectVelocities();
 
 // Temp H2D and D2H transfers
+double* GetTemperature();
 double* GetVelX();
 double* GetVelY();
 double* GetVelZ();

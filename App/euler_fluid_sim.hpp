@@ -89,6 +89,8 @@ struct CudaDispatchBuffers {
     template <typename T>
     using VzSB =
         SwapBuffer<T, Cardinality(SimulationDomain::velocitiesZDimensions), padding_size, SimulationConstants::domains>;
+    template <typename T>
+    using GridSB = SwapBuffer<T, Cardinality(SimulationDomain::dimensions), padding_size, SimulationConstants::domains>;
 
     double* reduction_buffer;
     SB<double> pressure;
@@ -98,6 +100,7 @@ struct CudaDispatchBuffers {
     SB<double> search;
     SB<CoefficientsValues<double>> coefficients;
     SB<CoefficientsValues<double>> preconditioner;
+    GridSB<double> temperature;
     VxSB<double> velocities_x;
     VySB<double> velocities_y;
     VzSB<double> velocities_z;
@@ -107,9 +110,11 @@ struct CudaGraphs {
 
     cudaGraphExec_t calculate_divergence;
     cudaGraphExec_t update_velocities;
+    cudaGraphExec_t advect_temperature;
     cudaGraphExec_t advect_velocities;
     cudaGraphExec_t sync_divergence;
     cudaGraphExec_t sync_pressure;
+    cudaGraphExec_t sync_temperature;
     cudaGraphExec_t sync_velocities;
     cudaGraphExec_t PCG_Solver;
 };

@@ -127,29 +127,6 @@ void SimulationDomain::ApplyBuoyancy(const EulerFluidSim* simulation) {
     }
 }
 
-void SimulationDomain::AdvectTemperature() {
-    // TODO: add a temperature smoothing, unrelated to velocity, in order to prevent formation of thin columns
-    math::vec3<float> pos;
-    math::vec3<float> prevPos;
-    math::vec3<float> nPos;
-    for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
-        for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = border_size; z < dimensions.z - border_size; ++z) {
-                nPos = math::vec3<float>{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} +
-                       ValueGridOffset;
-                math::vec3<float> velocity = SampleVelocity(nPos);
-                pos = DenormalizePosition(nPos);
-                prevPos = pos - velocity * SimulationConstants::fixed_time_step;
-                nPos = NormalizePosition(prevPos) - ValueGridOffset;
-                (*cell_temperature_temp_)[x][y][z] =
-                    Interpolation(cell_temperature_.get(), nPos, SimulationConstants::interpolation_type);
-            }
-        }
-    }
-
-    std::swap(cell_temperature_, cell_temperature_temp_);
-}
-
 math::vec3<float> SimulationDomain::NormalizePosition(const math::vec3<float>& pos) const {
     return pos / SimulationConstants::scale;
 }

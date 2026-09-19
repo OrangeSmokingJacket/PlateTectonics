@@ -3,6 +3,8 @@
 #include <type_traits>
 
 // max divergence and dot_product
+__device__ __managed__ double* d_temperature = nullptr;
+__device__ __managed__ double* d_temperature_temp = nullptr;
 __device__ __managed__ double* d_velocity_x = nullptr;
 __device__ __managed__ double* d_velocity_x_temp = nullptr;
 __device__ __managed__ double* d_velocity_y = nullptr;
@@ -17,6 +19,11 @@ __device__ __managed__ double d_beta = 0.0;
 __device__ __managed__ double d_total_error = DBL_MAX;
 __device__ __managed__ uint32_t d_loop_iteration = 0;
 
+double* GetTemperature() {
+    double* result;
+    cudaMemcpyFromSymbol(&result, d_temperature, sizeof(double*));
+    return result;
+}
 double* GetVelX() {
     double* result;
     cudaMemcpyFromSymbol(&result, d_velocity_x, sizeof(double*));
@@ -432,13 +439,28 @@ cudaGraph_t CreateXpYD(CudaDispatchBuffers* d_buffers) {
     return graph;
 }
 
-void SetVelocityDevicePointers(double* x, double* x_temp, double* y, double* y_temp, double* z, double* z_temp) {
+void SetVelocityDevicePointers(double* temperature,
+                               double* temperature_temp,
+                               double* x,
+                               double* x_temp,
+                               double* y,
+                               double* y_temp,
+                               double* z,
+                               double* z_temp) {
+    cudaMemcpyToSymbol(d_temperature, &temperature, sizeof(double*));
+    cudaMemcpyToSymbol(d_temperature_temp, &temperature_temp, sizeof(double*));
     cudaMemcpyToSymbol(d_velocity_x, &x, sizeof(double*));
     cudaMemcpyToSymbol(d_velocity_x_temp, &x_temp, sizeof(double*));
     cudaMemcpyToSymbol(d_velocity_y, &y, sizeof(double*));
     cudaMemcpyToSymbol(d_velocity_y_temp, &y_temp, sizeof(double*));
     cudaMemcpyToSymbol(d_velocity_z, &z, sizeof(double*));
     cudaMemcpyToSymbol(d_velocity_z_temp, &z_temp, sizeof(double*));
+}
+
+__global__ void SwapTemperatureBuffer() {
+    double* temp = d_temperature;
+    d_temperature = d_temperature_temp;
+    d_temperature_temp = temp;
 }
 
 __global__ void SwapVelocityBuffers() {
@@ -583,6 +605,80 @@ __global__ void SyncFromYMinus(T* v) {
 
     v[GridIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
         v[GridIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+}
+
+// dispatched over real cells
+__global__ void SyncTemperatureFromXPlus() {
+    // blockId.x indicates domain
+    // blockID.yz - dispatches over domain face
+    // threadIdx.x = halo plane
+
+    uint32_t index_x = domain_dimensions.x - halo_size.x;
+    uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.x;
+
+    uint32_t n_index_x = index_y;
+    uint32_t n_index_y = domain_dimensions.y - halo_size.y - 1;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].x_plus;
+
+    d_temperature[GridIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
+        d_temperature[GridIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+}
+__global__ void SyncTemperatureFromXMinus() {
+    // blockId.x indicates domain
+    // blockID.yz - dispatches over domain face
+    // threadIdx.x = halo plane
+
+    uint32_t index_x = 0;
+    uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.x;
+
+    uint32_t n_index_x = domain_dimensions.x - index_y - 1;
+    uint32_t n_index_y = halo_size.y * 2 - 1;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].x_minus;
+
+    d_temperature[GridIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
+        d_temperature[GridIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+}
+__global__ void SyncTemperatureFromYPlus() {
+    // blockId.y indicates domain
+    // blockID.xz - dispatches over domain face
+    // threadIdx.y = halo plane
+
+    uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+    uint32_t index_y = domain_dimensions.y - halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.y;
+
+    uint32_t n_index_x = domain_dimensions.x - halo_size.x - 1;
+    uint32_t n_index_y = index_x;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].y_plus;
+
+    d_temperature[GridIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
+        d_temperature[GridIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+}
+__global__ void SyncTemperatureFromYMinus() {
+    // blockId.y indicates domain
+    // blockID.xz - dispatches over domain face
+    // threadIdx.y = halo plane
+
+    uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+    uint32_t index_y = 0;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+    uint32_t index_w = blockIdx.y;
+
+    uint32_t n_index_x = halo_size.x * 2 - 1;
+    uint32_t n_index_y = domain_dimensions.y - index_x - 1;
+    uint32_t n_index_z = index_z;
+    uint32_t n_index_w = w_neighbours[index_w].y_minus;
+
+    d_temperature[GridIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
+        d_temperature[GridIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
 }
 
 // Due to domain layout selection, X velocity will always be filled from Y and vice versa
@@ -933,6 +1029,52 @@ cudaGraph_t CreateSyncOrthogonal(CudaDispatchBuffers* d_buffers,
         auto child = CreateSyncOrthogonalYMinus(d_buffers, grid);
         cudaGraphAddChildGraphNode(&nodes[3], graph, nullptr, 0, child);
         cudaGraphDestroy(child);
+    }
+
+    return graph;
+}
+
+cudaGraph_t CreateSyncTemperatureOrthogonal() {
+    cudaGraph_t graph;
+    cudaGraphCreate(&graph);
+
+    cudaGraphNode_t nodes[4];
+
+    {
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[1] / 8,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{halo_size.x, 8, 8};
+        params.func = &SyncTemperatureFromXPlus;
+        cudaGraphAddKernelNode(&nodes[0], graph, nullptr, 0, &params);
+    }
+    {
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[1] / 8,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{halo_size.x, 8, 8};
+        params.func = &SyncTemperatureFromXMinus;
+        cudaGraphAddKernelNode(&nodes[1], graph, nullptr, 0, &params);
+    }
+    {
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8,
+                              EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{8, halo_size.y, 8};
+        params.func = &SyncTemperatureFromYPlus;
+        cudaGraphAddKernelNode(&nodes[2], graph, nullptr, 0, &params);
+    }
+    {
+        cudaKernelNodeParams params{};
+        params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8,
+                              EulerFluidSim::domains,
+                              SimulationDomain::real_dimensions[2] / 8};
+        params.blockDim = dim3{8, halo_size.y, 8};
+        params.func = &SyncTemperatureFromYMinus;
+        cudaGraphAddKernelNode(&nodes[3], graph, nullptr, 0, &params);
     }
 
     return graph;
@@ -1575,6 +1717,48 @@ __device__ ValueType TrilinearInterpolation(const ValueType* grid,
 }
 
 // dispatched over real cells
+__global__ void AdvectTemperature(uint32_t w) {
+    uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+    uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + z_border_size;
+
+    ValueType n_pos[3];
+    ValueType prev_pos[3];
+    n_pos[0] = static_cast<ValueType>(index_x) + GetOffset<ValueGridOffset, 0>();
+    n_pos[1] = static_cast<ValueType>(index_y) + GetOffset<ValueGridOffset, 1>();
+    n_pos[2] = static_cast<ValueType>(index_z) + GetOffset<ValueGridOffset, 2>();
+
+    ValueType velocity[3];
+    velocity[0] = TrilinearInterpolation(d_velocity_x,
+                                         &StaggeredGridXIndex,
+                                         n_pos[0] - GetOffset<VelocityXGridOffset, 0>(),
+                                         n_pos[1] - GetOffset<VelocityXGridOffset, 1>(),
+                                         n_pos[2] - GetOffset<VelocityXGridOffset, 2>(),
+                                         w);
+    velocity[1] = TrilinearInterpolation(d_velocity_y,
+                                         &StaggeredGridYIndex,
+                                         n_pos[0] - GetOffset<VelocityYGridOffset, 0>(),
+                                         n_pos[1] - GetOffset<VelocityYGridOffset, 1>(),
+                                         n_pos[2] - GetOffset<VelocityYGridOffset, 2>(),
+                                         w);
+    velocity[2] = TrilinearInterpolation(d_velocity_z,
+                                         &StaggeredGridZIndex,
+                                         n_pos[0] - GetOffset<VelocityZGridOffset, 0>(),
+                                         n_pos[1] - GetOffset<VelocityZGridOffset, 1>(),
+                                         n_pos[2] - GetOffset<VelocityZGridOffset, 2>(),
+                                         w);
+
+    unrolled_for<3>([&](auto ic) {
+        constexpr size_t i = decltype(ic)::value;
+        prev_pos[i] = DenormalizePosition(n_pos[i]) - velocity[i] * SimulationConstants::fixed_time_step;
+        n_pos[i] = NormalizePosition(prev_pos[i]) - GetOffset<VelocityXGridOffset, i>();
+    });
+
+    d_temperature_temp[GridIndex(index_x, index_y, index_z, w)] =
+        TrilinearInterpolation(d_temperature, &GridIndex, n_pos[0], n_pos[1], n_pos[2], w);
+}
+
+// dispatched over real cells
 __global__ void AdvectVelocitiesX(uint32_t w) {
     if (blockIdx.x * blockDim.x + threadIdx.x < staggered_x_domain_dimensions.x - halo_size.x * 2) {
         uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
@@ -1704,6 +1888,36 @@ __global__ void AdvectVelocitiesZ(uint32_t w) {
         d_velocity_z_temp[StaggeredGridZIndex(index_x, index_y, index_z, w)] =
             TrilinearInterpolation(d_velocity_z, &StaggeredGridZIndex, n_pos[0], n_pos[1], n_pos[2], w);
     }
+}
+
+cudaGraph_t CreateAdvectTemperature() {
+    cudaGraph_t graph;
+    cudaGraphCreate(&graph);
+
+    cudaGraphNode_t nodes[EulerFluidSim::domains + 1];
+
+    for (uint32_t domain_index = 0; domain_index < EulerFluidSim::domains; ++domain_index) {
+        void* args[1];
+        args[0] = &domain_index;
+        cudaKernelNodeParams params{};
+        params.blockDim = block_dimensions;
+        params.kernelParams = args;
+        params.func = &AdvectTemperature;
+        params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8,
+                              SimulationDomain::real_dimensions[1] / 8,
+                              SimulationDomain::real_dimensions[2] / 8};
+        cudaGraphAddKernelNode(&nodes[domain_index], graph, nullptr, 0, &params);
+    }
+
+    cudaKernelNodeParams params{};
+    params.gridDim = 1;
+    params.blockDim = 1;
+    params.kernelParams = nullptr;
+    params.func = &SwapTemperatureBuffer;
+
+    cudaGraphAddKernelNode(&nodes[EulerFluidSim::domains], graph, &nodes[0], EulerFluidSim::domains, &params);
+
+    return graph;
 }
 
 cudaGraph_t CreateAdvectVelocities() {
