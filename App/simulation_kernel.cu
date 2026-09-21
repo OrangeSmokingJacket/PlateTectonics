@@ -699,8 +699,9 @@ __global__ void SyncVelocityXFromXPlus() {
     uint32_t n_index_z = index_z;
     uint32_t n_index_w = w_neighbours[index_w].x_plus;
 
+    // grid is oriented the opposite way here
     d_velocity_x[StaggeredGridXIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
-        d_velocity_y[StaggeredGridYIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+        -d_velocity_y[StaggeredGridYIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
 }
 __global__ void SyncVelocityXFromXMinus() {
     // blockId.x indicates domain
@@ -717,8 +718,9 @@ __global__ void SyncVelocityXFromXMinus() {
     uint32_t n_index_z = index_z;
     uint32_t n_index_w = w_neighbours[index_w].x_minus;
 
+    // grid is oriented the opposite way here
     d_velocity_x[StaggeredGridXIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
-        d_velocity_y[StaggeredGridYIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+        -d_velocity_y[StaggeredGridYIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
 }
 __global__ void SyncVelocityXFromYPlus() {
     //! X dimension is not mult of blockDim
@@ -758,8 +760,9 @@ __global__ void SyncVelocityXFromYMinus() {
         uint32_t n_index_z = index_z;
         uint32_t n_index_w = w_neighbours[index_w].y_minus;
 
+        // grid is oriented the opposite way here
         d_velocity_x[StaggeredGridXIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
-            d_velocity_y[StaggeredGridYIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+            -d_velocity_y[StaggeredGridYIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
     }
 }
 
@@ -801,8 +804,9 @@ __global__ void SyncVelocityYFromXMinus() {
         uint32_t n_index_z = index_z;
         uint32_t n_index_w = w_neighbours[index_w].x_minus;
 
+        // grid is oriented the opposite way here
         d_velocity_y[StaggeredGridYIndex(index_x + threadIdx.x, index_y, index_z, index_w)] =
-            d_velocity_x[StaggeredGridXIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
+            -d_velocity_x[StaggeredGridXIndex(n_index_x, n_index_y - threadIdx.x, n_index_z, n_index_w)];
     }
 }
 __global__ void SyncVelocityYFromYPlus() {
@@ -820,8 +824,9 @@ __global__ void SyncVelocityYFromYPlus() {
     uint32_t n_index_z = index_z;
     uint32_t n_index_w = w_neighbours[index_w].y_plus;
 
+    // grid is oriented the opposite way here
     d_velocity_y[StaggeredGridYIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
-        d_velocity_x[StaggeredGridXIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+        -d_velocity_x[StaggeredGridXIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
 }
 //! Dispatch with halo.x + 1 because of stagger grid
 __global__ void SyncVelocityYFromYMinus() {
@@ -839,8 +844,9 @@ __global__ void SyncVelocityYFromYMinus() {
     uint32_t n_index_z = index_z;
     uint32_t n_index_w = w_neighbours[index_w].y_minus;
 
+    // grid is oriented the opposite way here
     d_velocity_y[StaggeredGridYIndex(index_x, index_y + threadIdx.y, index_z, index_w)] =
-        d_velocity_x[StaggeredGridXIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
+        -d_velocity_x[StaggeredGridXIndex(n_index_x - threadIdx.y, n_index_y, n_index_z, n_index_w)];
 }
 
 // Velocity Z technically should be dispatch over real_cells.z + 1 (which is not fit cleanly with bloc dimensions
