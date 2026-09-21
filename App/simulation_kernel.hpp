@@ -27,6 +27,8 @@ cudaGraph_t CreateUpdateVelocities(CudaDispatchBuffers* d_buffers);
 cudaGraph_t CreateAdvectTemperature();
 cudaGraph_t CreateAdvectVelocities();
 
+cudaGraph_t CreateApplyBuoyancy();
+
 // Temp H2D and D2H transfers
 double* GetTemperature();
 double* GetVelX();
@@ -35,3 +37,5 @@ double* GetVelZ();
 double GetScalarOutput();
 double GetErrorOutput();
 uint32_t GetIterationsOutput();
+void SetThermalExpansionCoefficient(double thermal_expansion_coefficient);
+void SetGravitationalAcceleration(double gravitational_acceleration);

@@ -18,6 +18,8 @@ __device__ __managed__ double d_alpha = 0.0;
 __device__ __managed__ double d_beta = 0.0;
 __device__ __managed__ double d_total_error = DBL_MAX;
 __device__ __managed__ uint32_t d_loop_iteration = 0;
+__device__ __managed__ double d_thermal_expansion_coefficient = 0.0;
+__device__ __managed__ double d_gravitational_acceleration = 0.0;
 
 double* GetTemperature() {
     double* result;
@@ -54,6 +56,14 @@ uint32_t GetIterationsOutput() {
     cudaMemcpyFromSymbol(&result, d_loop_iteration, sizeof(uint32_t));
     return result;
 }
+void SetThermalExpansionCoefficient(double thermal_expansion_coefficient) {
+    cudaMemcpyToSymbol(d_thermal_expansion_coefficient,
+                       &thermal_expansion_coefficient,
+                       sizeof(d_thermal_expansion_coefficient));
+}
+void SetGravitationalAcceleration(double gravitational_acceleration) {
+    cudaMemcpyToSymbol(d_gravitational_acceleration, &gravitational_acceleration, sizeof(d_gravitational_acceleration));
+}
 
 using ValueType = SimulationDomain::GridValues::value_type;
 static constexpr size_t elements = SimulationDomain::GridValues::cardinality;
@@ -79,6 +89,7 @@ constexpr dim3 halo_size{SimulationDomain::halo_size[0],
                          SimulationDomain::halo_size[2]};
 
 constexpr uint32_t z_border_size = SimulationDomain::border_size;
+constexpr double simulation_time_step = SimulationConstants::fixed_time_step;
 
 template <size_t, typename F, size_t... I>
 __host__ __device__ void unrolled_for_impl(F&& f, std::index_sequence<I...>) {
@@ -1969,6 +1980,54 @@ cudaGraph_t CreateAdvectVelocities() {
     params.func = &SwapVelocityBuffers;
 
     cudaGraphAddKernelNode(&nodes[EulerFluidSim::domains * 3], graph, &nodes[0], EulerFluidSim::domains * 3, &params);
+
+    return graph;
+}
+
+__global__ void ApplyBuoyancy(uint32_t w) {
+    // k works only with const thermal_expansion_coefficient
+    const double k = d_thermal_expansion_coefficient * d_gravitational_acceleration * simulation_time_step;
+
+    uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + halo_size.x;
+    uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + halo_size.y;
+    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + halo_size.z;
+
+    if (index_z + z_border_size < domain_dimensions.z) {
+        double localTemperature = (d_temperature[GridIndex(index_x - 1, index_y, index_z, w)] +
+                                   d_temperature[GridIndex(index_x + 1, index_y, index_z, w)] +
+                                   d_temperature[GridIndex(index_x, index_y - 1, index_z, w)] +
+                                   d_temperature[GridIndex(index_x, index_y + 1, index_z, w)] +
+                                   d_temperature[GridIndex(index_x - 1, index_y, index_z + 1, w)] +
+                                   d_temperature[GridIndex(index_x + 1, index_y, index_z + 1, w)] +
+                                   d_temperature[GridIndex(index_x, index_y - 1, index_z + 1, w)] +
+                                   d_temperature[GridIndex(index_x, index_y + 1, index_z + 1, w)]) *
+                                  0.125;
+        double deltaT = (d_temperature[GridIndex(index_x, index_y, index_z, w)] +
+                         d_temperature[GridIndex(index_x, index_y, index_z + 1, w)]) *
+                            0.5 -
+                        localTemperature;
+        d_velocity_z[StaggeredGridZIndex(index_x, index_y, index_z + 1, w)] += k * deltaT;
+    }
+}
+
+cudaGraph_t CreateApplyBuoyancy() {
+    cudaGraph_t graph;
+    cudaGraphCreate(&graph);
+
+    cudaGraphNode_t nodes[EulerFluidSim::domains];
+
+    for (uint32_t domain_index = 0; domain_index < EulerFluidSim::domains; ++domain_index) {
+        void* args[1];
+        args[0] = &domain_index;
+        cudaKernelNodeParams params{};
+        params.blockDim = block_dimensions;
+        params.kernelParams = args;
+        params.func = &ApplyBuoyancy;
+        params.gridDim = dim3{SimulationDomain::real_dimensions[0] / 8,
+                              SimulationDomain::real_dimensions[1] / 8,
+                              SimulationDomain::real_dimensions[2] / 8};
+        cudaGraphAddKernelNode(&nodes[domain_index], graph, nullptr, 0, &params);
+    }
 
     return graph;
 }

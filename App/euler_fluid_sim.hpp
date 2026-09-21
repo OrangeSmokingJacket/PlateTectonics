@@ -112,6 +112,7 @@ struct CudaGraphs {
     cudaGraphExec_t update_velocities;
     cudaGraphExec_t advect_temperature;
     cudaGraphExec_t advect_velocities;
+    cudaGraphExec_t apply_buoyancy;
     cudaGraphExec_t sync_divergence;
     cudaGraphExec_t sync_pressure;
     cudaGraphExec_t sync_temperature;

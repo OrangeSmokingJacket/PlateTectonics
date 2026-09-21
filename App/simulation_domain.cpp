@@ -103,30 +103,6 @@ void SimulationDomain::CalculatePreconditioner() {
         }
     }
 }
-
-void SimulationDomain::ApplyBuoyancy(const EulerFluidSim* simulation) {
-    // skip walls, except upper and lower ones
-    // k works only with const thermal_expansion_coefficient
-    const double k = simulation->thermal_expansion_coefficient * simulation->gravitational_acceleration_ *
-                     SimulationConstants::fixed_time_step;
-
-    for (size_t x = halo_size.x; x < dimensions.x - halo_size.x; ++x) {
-        for (size_t y = halo_size.y; y < dimensions.y - halo_size.y; ++y) {
-            for (size_t z = 0; z < dimensions.z - border_size; ++z) {
-                double localTemperature =
-                    ((*cell_temperature_)[x - 1][y][z] + (*cell_temperature_)[x + 1][y][z] +
-                     (*cell_temperature_)[x][y - 1][z] + (*cell_temperature_)[x][y + 1][z] +
-                     (*cell_temperature_)[x - 1][y][z + 1] + (*cell_temperature_)[x + 1][y][z + 1] +
-                     (*cell_temperature_)[x][y - 1][z + 1] + (*cell_temperature_)[x][y + 1][z + 1]) *
-                    0.125;
-                double deltaT =
-                    ((*cell_temperature_)[x][y][z] + (*cell_temperature_)[x][y][z + 1]) * 0.5 - localTemperature;
-                (*velocities_z_)[x][y][z + 1] += k * deltaT;
-            }
-        }
-    }
-}
-
 math::vec3<float> SimulationDomain::NormalizePosition(const math::vec3<float>& pos) const {
     return pos / SimulationConstants::scale;
 }

@@ -53,8 +53,6 @@ struct MinMax {
     double max;
 };
 
-class EulerFluidSim;
-
 // TODO: unique_ptr dereference cost is quite noticeable now
 struct SimulationDomain {
     // TODO: dimensions up to 64 or higher to minimize halo cells memory usage
@@ -84,7 +82,6 @@ struct SimulationDomain {
     explicit SimulationDomain(size_t face_index);
     void CalculateCoefficients();
     void CalculatePreconditioner();
-    void ApplyBuoyancy(const EulerFluidSim* simulation);
 
     [[nodiscard]] math::vec3<float> SampleVelocity(const math::vec3<float>& nPos) const;
 
