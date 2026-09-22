@@ -150,10 +150,6 @@ private:
     static constexpr bool IsSolidCell(size_t world_index_z) {
         return world_index_z == 0 || world_index_z + 1 >= SimulationDomain::dimensions.z;
     }
-    void SyncVelocitiesZ();
-    void SyncVelocities();
-    void SyncGridValues(std::unique_ptr<SimulationDomain::GridValues> SimulationDomain::* grid,
-                        SyncScope scope = SyncScope::Full);
 
     void SetInitialTemperature();
     void PCG();

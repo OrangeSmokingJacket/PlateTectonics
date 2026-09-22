@@ -524,7 +524,6 @@ cudaGraph_t CreateSwapVelocities() {
     return graph;
 }
 
-// For now that array is of a one from euler_fluid_sim.cpp
 // For W neighbours it is cheaper to look it up, than compute
 struct WNeighbour {
     size_t x_plus;
