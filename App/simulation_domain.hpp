@@ -103,10 +103,10 @@ struct SimulationDomain {
     size_t face_index_;
 };
 
-static constexpr math::vec3<float> ValueGridOffset{0.5, 0.5, 0.5};
-static constexpr math::vec3<float> VelocityXGridOffset{0.0, 0.5, 0.5};
-static constexpr math::vec3<float> VelocityYGridOffset{0.5, 0.0, 0.5};
-static constexpr math::vec3<float> VelocityZGridOffset{0.5, 0.5, 0.0};
+__constant__ constexpr math::vec3<float> ValueGridOffset{0.5, 0.5, 0.5};
+__constant__ constexpr math::vec3<float> VelocityXGridOffset{0.0, 0.5, 0.5};
+__constant__ constexpr math::vec3<float> VelocityYGridOffset{0.5, 0.0, 0.5};
+__constant__ constexpr math::vec3<float> VelocityZGridOffset{0.5, 0.5, 0.0};
 
 template <typename T, size_t X, size_t Y, size_t Z>
 void Array3D<T, X, Y, Z>::SetToZero() {

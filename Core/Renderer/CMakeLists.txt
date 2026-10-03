@@ -28,4 +28,5 @@ target_link_libraries(
         utils
         entity
         filesystem
+        math
 )
