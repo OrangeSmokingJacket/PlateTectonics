@@ -74,10 +74,17 @@ static constexpr dim3 grid_dimensions{SimulationDomain::real_dimensions[0] / blo
 
 template <math::vec3<size_t> GridDimensions = SimulationDomain::dimensions>
 __device__ constexpr uint32_t GridIndex(uint32_t x, uint32_t y, uint32_t z) {
+    if (x >= GridDimensions[0] || y >= GridDimensions[1] || z >= GridDimensions[2]) {
+        cuda::std::terminate();
+    }
     return GridDimensions[1] * GridDimensions[2] * x + GridDimensions[2] * y + z;
 }
 
 __device__ constexpr uint32_t GridIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+    if (x >= SimulationDomain::dimensions[0] || y >= SimulationDomain::dimensions[1] ||
+        z >= SimulationDomain::dimensions[2] || w >= EulerFluidSim::domains) {
+        cuda::std::terminate();
+    }
     return SimulationDomain::dimensions[0] * SimulationDomain::dimensions[1] * SimulationDomain::dimensions[2] * w +
            SimulationDomain::dimensions[1] * SimulationDomain::dimensions[2] * x + SimulationDomain::dimensions[2] * y +
            z;
@@ -101,20 +108,26 @@ template <typename T>
 __global__ void ApplyCoefficientsKernel(T* __restrict__ target,
                                         const T* __restrict__ source,
                                         const CoefficientsValues<T>* __restrict__ coefficients) {
-    uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + SimulationDomain::halo_size[0];
-    uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + SimulationDomain::halo_size[1];
-    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + SimulationDomain::halo_size[2];
+    if (blockIdx.z * blockDim.z + threadIdx.z < SimulationDomain::dimensions[2] - SimulationDomain::border_size * 2) {
+        uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + SimulationDomain::halo_size[0];
+        uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + SimulationDomain::halo_size[1];
+        uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + SimulationDomain::border_size;
 
-    target[GridIndex<>(index_x, index_y, index_z)] =
-        coefficients[GridIndex(index_x, index_y, index_z)].diag * source[GridIndex(index_x, index_y, index_z)] +
-        coefficients[GridIndex(index_x, index_y, index_z)].plusx * source[GridIndex(index_x + 1, index_y, index_z)] +
-        coefficients[GridIndex(index_x, index_y, index_z)].plusy * source[GridIndex(index_x, index_y + 1, index_z)] +
-        coefficients[GridIndex(index_x, index_y, index_z)].plusz * source[GridIndex(index_x, index_y, index_z + 1)] +
-        coefficients[GridIndex(index_x - 1, index_y, index_z)].plusx *
-            source[GridIndex(index_x - 1, index_y, index_z)] +
-        coefficients[GridIndex(index_x, index_y - 1, index_z)].plusy *
-            source[GridIndex(index_x, index_y - 1, index_z)] +
-        coefficients[GridIndex(index_x, index_y, index_z - 1)].plusz * source[GridIndex(index_x, index_y, index_z - 1)];
+        target[GridIndex<>(index_x, index_y, index_z)] =
+            coefficients[GridIndex(index_x, index_y, index_z)].diag * source[GridIndex(index_x, index_y, index_z)] +
+            coefficients[GridIndex(index_x, index_y, index_z)].plusx *
+                source[GridIndex(index_x + 1, index_y, index_z)] +
+            coefficients[GridIndex(index_x, index_y, index_z)].plusy *
+                source[GridIndex(index_x, index_y + 1, index_z)] +
+            coefficients[GridIndex(index_x, index_y, index_z)].plusz *
+                source[GridIndex(index_x, index_y, index_z + 1)] +
+            coefficients[GridIndex(index_x - 1, index_y, index_z)].plusx *
+                source[GridIndex(index_x - 1, index_y, index_z)] +
+            coefficients[GridIndex(index_x, index_y - 1, index_z)].plusy *
+                source[GridIndex(index_x, index_y - 1, index_z)] +
+            coefficients[GridIndex(index_x, index_y, index_z - 1)].plusz *
+                source[GridIndex(index_x, index_y, index_z - 1)];
+    }
 }
 
 void CreateApplySparseMatrixGraph(
@@ -1706,49 +1719,53 @@ __device__ ValueType TrilinearInterpolation(const ValueType* grid,
 
 // dispatched over real cells
 __global__ void AdvectTemperature(uint32_t w) {
-    uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + SimulationDomain::halo_size[0];
-    uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + SimulationDomain::halo_size[1];
-    uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + SimulationDomain::border_size;
+    if (blockIdx.z * blockDim.z + threadIdx.z < SimulationDomain::dimensions[2] - SimulationDomain::border_size * 2) {
+        uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + SimulationDomain::halo_size[0];
+        uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + SimulationDomain::halo_size[1];
+        uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + SimulationDomain::border_size;
 
-    math::vec3<ValueType> n_pos;
-    math::vec3<ValueType> prev_pos;
-    n_pos[0] = static_cast<ValueType>(index_x) + ValueGridOffset[0];
-    n_pos[1] = static_cast<ValueType>(index_y) + ValueGridOffset[1];
-    n_pos[2] = static_cast<ValueType>(index_z) + ValueGridOffset[2];
+        math::vec3<ValueType> n_pos;
+        math::vec3<ValueType> prev_pos;
+        n_pos[0] = static_cast<ValueType>(index_x) + ValueGridOffset[0];
+        n_pos[1] = static_cast<ValueType>(index_y) + ValueGridOffset[1];
+        n_pos[2] = static_cast<ValueType>(index_z) + ValueGridOffset[2];
 
-    math::vec3<ValueType> velocity;
-    velocity[0] = TrilinearInterpolation(d_velocity_x,
-                                         &StaggeredGridXIndex,
-                                         n_pos[0] - VelocityXGridOffset[0],
-                                         n_pos[1] - VelocityXGridOffset[1],
-                                         n_pos[2] - VelocityXGridOffset[2],
-                                         w);
-    velocity[1] = TrilinearInterpolation(d_velocity_y,
-                                         &StaggeredGridYIndex,
-                                         n_pos[0] - VelocityYGridOffset[0],
-                                         n_pos[1] - VelocityYGridOffset[1],
-                                         n_pos[2] - VelocityYGridOffset[2],
-                                         w);
-    velocity[2] = TrilinearInterpolation(d_velocity_z,
-                                         &StaggeredGridZIndex,
-                                         n_pos[0] - VelocityZGridOffset[0],
-                                         n_pos[1] - VelocityZGridOffset[1],
-                                         n_pos[2] - VelocityZGridOffset[2],
-                                         w);
+        math::vec3<ValueType> velocity;
+        velocity[0] = TrilinearInterpolation(d_velocity_x,
+                                             &StaggeredGridXIndex,
+                                             n_pos[0] - VelocityXGridOffset[0],
+                                             n_pos[1] - VelocityXGridOffset[1],
+                                             n_pos[2] - VelocityXGridOffset[2],
+                                             w);
+        velocity[1] = TrilinearInterpolation(d_velocity_y,
+                                             &StaggeredGridYIndex,
+                                             n_pos[0] - VelocityYGridOffset[0],
+                                             n_pos[1] - VelocityYGridOffset[1],
+                                             n_pos[2] - VelocityYGridOffset[2],
+                                             w);
+        velocity[2] = TrilinearInterpolation(d_velocity_z,
+                                             &StaggeredGridZIndex,
+                                             n_pos[0] - VelocityZGridOffset[0],
+                                             n_pos[1] - VelocityZGridOffset[1],
+                                             n_pos[2] - VelocityZGridOffset[2],
+                                             w);
 
-    for (size_t i = 0; i < 3; ++i) {
-        prev_pos[i] = DenormalizePosition(n_pos[i]) - velocity[i] * SimulationConstants::fixed_time_step;
-        n_pos[i] = NormalizePosition(prev_pos[i]) - VelocityXGridOffset[i];
+        for (size_t i = 0; i < 3; ++i) {
+            prev_pos[i] = DenormalizePosition(n_pos[i]) - velocity[i] * SimulationConstants::fixed_time_step;
+            n_pos[i] = NormalizePosition(prev_pos[i]) - VelocityXGridOffset[i];
+        }
+
+        d_temperature_temp[GridIndex(index_x, index_y, index_z, w)] =
+            TrilinearInterpolation(d_temperature, &GridIndex, n_pos[0], n_pos[1], n_pos[2], w);
     }
-
-    d_temperature_temp[GridIndex(index_x, index_y, index_z, w)] =
-        TrilinearInterpolation(d_temperature, &GridIndex, n_pos[0], n_pos[1], n_pos[2], w);
 }
 
 // dispatched over real cells
 __global__ void AdvectVelocitiesX(uint32_t w) {
     if (blockIdx.x * blockDim.x + threadIdx.x <
-        SimulationDomain::velocitiesXDimensions[0] - SimulationDomain::halo_size[0] * 2) {
+            SimulationDomain::velocitiesXDimensions[0] - SimulationDomain::halo_size[0] * 2 &&
+        blockIdx.z * blockDim.z + threadIdx.z <
+            SimulationDomain::velocitiesXDimensions[2] - SimulationDomain::border_size * 2) {
         uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + SimulationDomain::halo_size[0];
         uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + SimulationDomain::halo_size[1];
         uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + SimulationDomain::border_size;
@@ -1792,7 +1809,9 @@ __global__ void AdvectVelocitiesX(uint32_t w) {
 // dispatched over real cells
 __global__ void AdvectVelocitiesY(uint32_t w) {
     if (blockIdx.y * blockDim.y + threadIdx.y <
-        SimulationDomain::velocitiesYDimensions[1] - SimulationDomain::halo_size[1] * 2) {
+            SimulationDomain::velocitiesYDimensions[1] - SimulationDomain::halo_size[1] * 2 &&
+        blockIdx.z * blockDim.z + threadIdx.z <
+            SimulationDomain::velocitiesYDimensions[2] - SimulationDomain::border_size * 2) {
         uint32_t index_x = blockIdx.x * blockDim.x + threadIdx.x + SimulationDomain::halo_size[0];
         uint32_t index_y = blockIdx.y * blockDim.y + threadIdx.y + SimulationDomain::halo_size[1];
         uint32_t index_z = blockIdx.z * blockDim.z + threadIdx.z + SimulationDomain::border_size;

@@ -116,6 +116,7 @@ if (MSVC)
         $<$<COMPILE_LANGUAGE:CXX>:/external:anglebrackets>
         $<$<COMPILE_LANGUAGE:CUDA>:-rdc=true>
         $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
+        $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Debug>>:-G>
     )
 else()
     target_compile_options(${PROJECT_NAME} PRIVATE
@@ -125,5 +126,6 @@ else()
         $<$<COMPILE_LANGUAGE:CXX>:-fconcepts-diagnostics-depth=10>
         $<$<COMPILE_LANGUAGE:CUDA>:-rdc=true>
         $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
+        $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Debug>>:-G>
     )
 endif()
