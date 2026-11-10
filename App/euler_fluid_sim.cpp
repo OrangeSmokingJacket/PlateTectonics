@@ -4,6 +4,7 @@
 #include <Core/Renderer/renderer.hpp>
 #include <Math/scalar_ops.hpp>
 #include <Utils/compiler_utils.hpp>
+#include <cuda_gl_interop.h>
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -69,6 +70,10 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
     cudaMalloc(&cuda_buffers_.velocities_z.b2, cuda_buffers_.velocities_z.allocation_size);
     cuda_buffers_.velocities_z.front_buffer = &cuda_buffers_.velocities_z.b1;
     cuda_buffers_.velocities_z.back_buffer = &cuda_buffers_.velocities_z.b2;
+
+    cudaGraphicsGLRegisterBuffer(&draw_buffers_.velocities_mapped,
+                                 draw_buffers_.velocity_arrows.Id(),
+                                 cudaGraphicsMapFlagsWriteDiscard);
 
     for (auto& domain : *domains_) {
         cudaHostRegister(domain.cell_pressure_->flat_begin(),
@@ -224,6 +229,8 @@ EulerFluidSim::EulerFluidSim(Core::RenderPipeline* renderer, utils::DefaultThrea
 }
 
 EulerFluidSim::~EulerFluidSim() {
+    cudaGraphicsUnregisterResource(draw_buffers_.velocities_mapped);
+
     cudaGraphExecDestroy(cuda_graphs_.calculate_divergence);
     cudaGraphExecDestroy(cuda_graphs_.update_velocities);
     cudaGraphExecDestroy(cuda_graphs_.advect_temperature);
@@ -705,38 +712,18 @@ void EulerFluidSim::DrawBoundaryVelocities(Core::RenderPipeline* renderer, bool 
 }
 
 void EulerFluidSim::DrawInterpolatedVelocities(Core::RenderPipeline* renderer, bool persistent) const {
-    // 3 lines per arrow, but EulerFluidSim shouldn't know about that
-    auto arrow_count = math::cube(cell_sample_count) * Cardinality(SimulationDomain::real_dimensions) * 6 * 3;
-    renderer->ReserveLineSpace(interpolated_velocity_color_, arrow_count, persistent);
+    DrawFillInterpolatedVelocities();
+    renderer->DebugDrawLines(interpolated_velocity_color_,
+                             draw_buffers_.velocity_arrows,
+                             domains * Cardinality(SimulationDomain::real_dimensions) * math::cube(cell_sample_count) *
+                                 6);
+}
 
-    float sample_stride = 1.0f / static_cast<float>(cell_sample_count);
-    float sample_offset = sample_stride * 0.5f;
-
-    for (const auto& domain : *domains_) {
-        auto offset = math::vec3<float>{world_origin_offset.x, world_origin_offset.y, 0.0f};
-        offset -= static_cast<math::vec3<float>>(SimulationDomain::halo_size) * SimulationConstants::scale;
-
-        for (size_t x = 0; x < SimulationDomain::real_dimensions.x * cell_sample_count; ++x) {
-            for (size_t y = 0; y < SimulationDomain::real_dimensions.y * cell_sample_count; ++y) {
-                for (size_t z = SimulationDomain::border_size;
-                     z < (SimulationDomain::real_dimensions.z - SimulationDomain::border_size) * cell_sample_count;
-                     ++z) {
-                    math::vec3<float> nPos =
-                        static_cast<math::vec3<float>>(SimulationDomain::halo_size) + sample_offset;
-                    nPos += math::vec3<float>{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} *
-                            sample_stride;
-                    math::vec3<float> interpolationPos = domain.DenormalizePosition(nPos);
-                    math::vec3<float> velocity = domain.SampleVelocity(nPos) / static_cast<float>(cell_sample_count);
-                    interpolationPos += offset;
-                    renderer->DebugDrawArrow(ToWorldCoordinates(domain.face_index_, interpolationPos),
-                                             ToWorldCoordinates(domain.face_index_, interpolationPos + velocity),
-                                             velocity.magnitude() * 0.25f,
-                                             interpolated_velocity_color_,
-                                             persistent);
-                }
-            }
-        }
-    }
+void EulerFluidSim::DrawFillInterpolatedVelocities() const {
+    auto err = cudaGetLastError();
+    assert(err == cudaSuccess);
+    ::DrawFillInterpolatedVelocities(draw_buffers_.velocities_mapped, cell_sample_count, 0.25f, cuda_graphs_.stream);
+    assert(err == cudaSuccess);
 }
 
 math::vec3<float> EulerFluidSim::ToWorldCoordinates(size_t face_index, const math::vec3<float>& pos) const {

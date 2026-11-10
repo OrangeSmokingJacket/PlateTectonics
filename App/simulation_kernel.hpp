@@ -29,6 +29,11 @@ cudaGraph_t CreateAdvectVelocities();
 
 cudaGraph_t CreateApplyBuoyancy();
 
+void DrawFillInterpolatedVelocities(cudaGraphicsResource* velocities_resource,
+                                    uint32_t interpolation_points,
+                                    float head_size,
+                                    cudaStream_t stream);
+
 // Temp H2D and D2H transfers
 double* GetTemperature();
 double* GetVelX();

@@ -5,6 +5,7 @@
 #include <Core/Engine/Assets/AssetRef/asset_ref.hpp>
 #include <Core/Engine/Assets/Texture/colors.hpp>
 #include <Core/Engine/Assets/Texture/texture.hpp>
+#include <Core/Renderer/buffer_objects.hpp>
 #include <Math/math_def.hpp>
 #include <Utils/thread_pool.hpp>
 #include <cuda_runtime.h>
@@ -158,6 +159,7 @@ private:
     void DrawGrid(Core::RenderPipeline* renderer, bool persistent) const;
     void DrawBoundaryVelocities(Core::RenderPipeline* renderer, bool persistent) const;
     void DrawInterpolatedVelocities(Core::RenderPipeline* renderer, bool persistent) const;
+    void DrawFillInterpolatedVelocities() const;
 
     math::vec3<float> ToWorldCoordinates(size_t face_index, const math::vec3<float>& pos) const;
 
@@ -180,7 +182,7 @@ public:
     bool draw_boundary_velocities = false;
     bool draw_interpolated_velocities = true;
     int cell_sample_count = 1;
-    int max_cell_sample_count = 4;
+    static constexpr int max_cell_sample_count = 4;
     // Temperature
     Core::Engine::Assets::Color min_temperature_color =
         Core::Engine::Assets::FromSColor(Core::Engine::Assets::SColor{12, 22, 188, 255});
@@ -197,6 +199,16 @@ public:
     Core::Engine::Assets::Color max_divergence_color = Core::Engine::Assets::Colors::Cyan;
 
 private:
+    struct DrawBuffers {
+        // for arrows duplicating vertices takes the same amount of memory as using index buffer, but this is simpler
+        mutable Core::VertexBufferObject velocity_arrows{
+            domains * Cardinality(SimulationDomain::real_dimensions) * // cells
+            sizeof(float) * 3 *                                        // vec3<float>
+            3 * 2 *                                                    // 3 lines per arrow
+            math::cube<size_t>(max_cell_sample_count)};                // maxed to fit all sample points
+        cudaGraphicsResource* velocities_mapped;
+    };
+    DrawBuffers draw_buffers_;
     CudaDispatchBuffers cuda_buffers_;
     CudaGraphs cuda_graphs_;
     utils::DefaultThreadPool* thread_pool_;

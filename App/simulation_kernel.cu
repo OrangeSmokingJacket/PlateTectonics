@@ -1,8 +1,9 @@
 #include "simulation_kernel.hpp"
+#include <cuda_gl_interop.h>
 
 #include <type_traits>
 
-// max divergence and dot_product
+// Swap buffers
 __device__ __managed__ double* d_temperature = nullptr;
 __device__ __managed__ double* d_temperature_temp = nullptr;
 __device__ __managed__ double* d_velocity_x = nullptr;
@@ -11,6 +12,7 @@ __device__ __managed__ double* d_velocity_y = nullptr;
 __device__ __managed__ double* d_velocity_y_temp = nullptr;
 __device__ __managed__ double* d_velocity_z = nullptr;
 __device__ __managed__ double* d_velocity_z_temp = nullptr;
+// Constants
 __device__ __managed__ double d_scalar_output = 0.0;
 __device__ __managed__ double d_sigma = 0.0;
 __device__ __managed__ double d_new_sigma = 0.0;
@@ -71,6 +73,7 @@ static constexpr dim3 block_dimensions{8, 8, 8};
 static constexpr dim3 grid_dimensions{SimulationDomain::real_dimensions[0] / block_dimensions.x,
                                       SimulationDomain::real_dimensions[1] / block_dimensions.y,
                                       SimulationDomain::real_dimensions[2] / block_dimensions.z};
+__constant__ static constexpr auto world_origin_offset = EulerFluidSim::world_origin_offset;
 
 template <math::vec3<size_t> GridDimensions = SimulationDomain::dimensions>
 __device__ constexpr uint32_t GridIndex(uint32_t x, uint32_t y, uint32_t z) {
@@ -80,27 +83,76 @@ __device__ constexpr uint32_t GridIndex(uint32_t x, uint32_t y, uint32_t z) {
     return GridDimensions[1] * GridDimensions[2] * x + GridDimensions[2] * y + z;
 }
 
+template <math::vec3<size_t> GridDimensions = SimulationDomain::dimensions>
 __device__ constexpr uint32_t GridIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
-    if (x >= SimulationDomain::dimensions[0] || y >= SimulationDomain::dimensions[1] ||
-        z >= SimulationDomain::dimensions[2] || w >= EulerFluidSim::domains) {
+    if (x >= GridDimensions[0] || y >= GridDimensions[1] || z >= GridDimensions[2] || w >= EulerFluidSim::domains) {
         cuda::std::terminate();
     }
-    return SimulationDomain::dimensions[0] * SimulationDomain::dimensions[1] * SimulationDomain::dimensions[2] * w +
-           SimulationDomain::dimensions[1] * SimulationDomain::dimensions[2] * x + SimulationDomain::dimensions[2] * y +
-           z;
+    return GridDimensions[0] * GridDimensions[1] * GridDimensions[2] * w + GridDimensions[1] * GridDimensions[2] * x +
+           GridDimensions[2] * y + z;
 }
 
-__device__ uint32_t StaggeredGridXIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
-    return CudaDispatchBuffers::VxSB<ValueType>::elements_padded * w +
-           GridIndex<SimulationDomain::velocitiesXDimensions>(x, y, z);
+template <math::vec3<size_t> GridDimensions = SimulationDomain::dimensions>
+__device__ constexpr uint32_t GridDomainOffset(uint32_t w) {
+    return GridDimensions[0] * GridDimensions[1] * GridDimensions[2] * w;
 }
-__device__ uint32_t StaggeredGridYIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
-    return CudaDispatchBuffers::VySB<ValueType>::elements_padded * w +
-           GridIndex<SimulationDomain::velocitiesYDimensions>(x, y, z);
+
+__device__ constexpr uint32_t StaggeredGridXDomainOffset(uint32_t w) {
+    return CudaDispatchBuffers::VxSB<ValueType>::elements_padded * w;
 }
-__device__ uint32_t StaggeredGridZIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
-    return CudaDispatchBuffers::VzSB<ValueType>::elements_padded * w +
-           GridIndex<SimulationDomain::velocitiesZDimensions>(x, y, z);
+
+__device__ constexpr uint32_t StaggeredGridYDomainOffset(uint32_t w) {
+    return CudaDispatchBuffers::VySB<ValueType>::elements_padded * w;
+}
+
+__device__ constexpr uint32_t StaggeredGridZDomainOffset(uint32_t w) {
+    return CudaDispatchBuffers::VzSB<ValueType>::elements_padded * w;
+}
+
+__device__ constexpr uint32_t StaggeredGridXIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+    return StaggeredGridXDomainOffset(w) + GridIndex<SimulationDomain::velocitiesXDimensions>(x, y, z);
+}
+
+__device__ constexpr uint32_t StaggeredGridYIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+    return StaggeredGridYDomainOffset(w) + GridIndex<SimulationDomain::velocitiesYDimensions>(x, y, z);
+}
+
+__device__ constexpr uint32_t StaggeredGridZIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+    return StaggeredGridZDomainOffset(w) + GridIndex<SimulationDomain::velocitiesZDimensions>(x, y, z);
+}
+
+template <math::vec3<size_t> GridDimensions>
+__device__ uint32_t ClampedGridValue(int32_t x, int32_t y, int32_t z) {
+#if not defined NDEBUG
+    // In practice, it should not have been called outside 1 cell boundary
+    if (x < -1 || y < -1 || z < -1 || x > static_cast<int32_t>(GridDimensions[0]) ||
+        y > static_cast<int32_t>(GridDimensions[1]) || z > static_cast<int32_t>(GridDimensions[2])) {
+        cuda::std::terminate();
+    }
+#endif
+    x = min(max(x, 0), static_cast<int>(GridDimensions[0]) - 1);
+    y = min(max(y, 0), static_cast<int>(GridDimensions[1]) - 1);
+    z = min(max(z, 0), static_cast<int>(GridDimensions[2]) - 1);
+    return GridIndex<GridDimensions>(static_cast<uint32_t>(x), static_cast<uint32_t>(y), static_cast<uint32_t>(z));
+}
+
+// Clamped variants are meant for interpolation, where sample stencil can reach 1 cell outside the grid
+// Could be united with regular grid index functions
+
+__device__ uint32_t ClampedGridIndex(int32_t x, int32_t y, int32_t z, uint32_t w) {
+    return GridDomainOffset(w) + ClampedGridValue<SimulationDomain::dimensions>(x, y, z);
+}
+
+__device__ uint32_t ClampedStaggeredGridXIndex(int32_t x, int32_t y, int32_t z, uint32_t w) {
+    return StaggeredGridXDomainOffset(w) + ClampedGridValue<SimulationDomain::velocitiesXDimensions>(x, y, z);
+}
+
+__device__ uint32_t ClampedStaggeredGridYIndex(int32_t x, int32_t y, int32_t z, uint32_t w) {
+    return StaggeredGridYDomainOffset(w) + ClampedGridValue<SimulationDomain::velocitiesYDimensions>(x, y, z);
+}
+
+__device__ uint32_t ClampedStaggeredGridZIndex(int32_t x, int32_t y, int32_t z, uint32_t w) {
+    return StaggeredGridZDomainOffset(w) + ClampedGridValue<SimulationDomain::velocitiesZDimensions>(x, y, z);
 }
 
 // Dispatched over real_dimensions
@@ -1678,27 +1730,25 @@ cudaGraph_t CreateUpdateVelocities(CudaDispatchBuffers* d_buffers) {
 // Works since scaling us uniform
 template <typename T>
 __device__ T NormalizePosition(T axis_pos) {
-    return axis_pos / SimulationConstants::scale;
+    return axis_pos / static_cast<double>(SimulationConstants::scale);
 }
 template <typename T>
 __device__ T DenormalizePosition(T axis_pos) {
-    return axis_pos * SimulationConstants::scale;
+    return axis_pos * static_cast<double>(SimulationConstants::scale);
 }
 
 template <typename T>
 __device__ T lerp(T v0, T v1, T t) {
     return v0 * (T{1} - t) + v1 * t;
 }
+
 // TODO: all intermediate values can be done in parallel and cached
-__device__ ValueType TrilinearInterpolation(const ValueType* grid,
-                                            uint32_t (*GridIndexPtr)(uint32_t, uint32_t, uint32_t, uint32_t),
-                                            ValueType pos_x,
-                                            ValueType pos_y,
-                                            ValueType pos_z,
-                                            uint32_t w) {
-    uint32_t x = floor(pos_x);
-    uint32_t y = floor(pos_y);
-    uint32_t z = floor(pos_z);
+template <uint32_t (*GridIndexPtr)(int32_t, int32_t, int32_t, uint32_t)>
+__device__ ValueType
+TrilinearInterpolation(const ValueType* grid, ValueType pos_x, ValueType pos_y, ValueType pos_z, uint32_t w) {
+    int32_t x = static_cast<int32_t>(floor(pos_x));
+    int32_t y = static_cast<int32_t>(floor(pos_y));
+    int32_t z = static_cast<int32_t>(floor(pos_z));
 
     ValueType fraction_x = pos_x - static_cast<ValueType>(x);
     ValueType fraction_y = pos_y - static_cast<ValueType>(y);
@@ -1717,6 +1767,11 @@ __device__ ValueType TrilinearInterpolation(const ValueType* grid,
     return lerp(c0, c1, fraction_z);
 }
 
+template <uint32_t (*GridIndexPtr)(int32_t, int32_t, int32_t, uint32_t)>
+__device__ ValueType TrilinearInterpolation(const ValueType* grid, math::vec3<ValueType> pos, uint32_t w) {
+    return TrilinearInterpolation<GridIndexPtr>(grid, pos[0], pos[1], pos[2], w);
+}
+
 // dispatched over real cells
 __global__ void AdvectTemperature(uint32_t w) {
     if (blockIdx.z * blockDim.z + threadIdx.z < SimulationDomain::dimensions[2] - SimulationDomain::border_size * 2) {
@@ -1731,32 +1786,29 @@ __global__ void AdvectTemperature(uint32_t w) {
         n_pos[2] = static_cast<ValueType>(index_z) + ValueGridOffset[2];
 
         math::vec3<ValueType> velocity;
-        velocity[0] = TrilinearInterpolation(d_velocity_x,
-                                             &StaggeredGridXIndex,
-                                             n_pos[0] - VelocityXGridOffset[0],
-                                             n_pos[1] - VelocityXGridOffset[1],
-                                             n_pos[2] - VelocityXGridOffset[2],
-                                             w);
-        velocity[1] = TrilinearInterpolation(d_velocity_y,
-                                             &StaggeredGridYIndex,
-                                             n_pos[0] - VelocityYGridOffset[0],
-                                             n_pos[1] - VelocityYGridOffset[1],
-                                             n_pos[2] - VelocityYGridOffset[2],
-                                             w);
-        velocity[2] = TrilinearInterpolation(d_velocity_z,
-                                             &StaggeredGridZIndex,
-                                             n_pos[0] - VelocityZGridOffset[0],
-                                             n_pos[1] - VelocityZGridOffset[1],
-                                             n_pos[2] - VelocityZGridOffset[2],
-                                             w);
+        velocity[0] = TrilinearInterpolation<&ClampedStaggeredGridXIndex>(d_velocity_x,
+                                                                          n_pos[0] - VelocityXGridOffset[0],
+                                                                          n_pos[1] - VelocityXGridOffset[1],
+                                                                          n_pos[2] - VelocityXGridOffset[2],
+                                                                          w);
+        velocity[1] = TrilinearInterpolation<&ClampedStaggeredGridYIndex>(d_velocity_y,
+                                                                          n_pos[0] - VelocityYGridOffset[0],
+                                                                          n_pos[1] - VelocityYGridOffset[1],
+                                                                          n_pos[2] - VelocityYGridOffset[2],
+                                                                          w);
+        velocity[2] = TrilinearInterpolation<&ClampedStaggeredGridZIndex>(d_velocity_z,
+                                                                          n_pos[0] - VelocityZGridOffset[0],
+                                                                          n_pos[1] - VelocityZGridOffset[1],
+                                                                          n_pos[2] - VelocityZGridOffset[2],
+                                                                          w);
 
         for (size_t i = 0; i < 3; ++i) {
             prev_pos[i] = DenormalizePosition(n_pos[i]) - velocity[i] * SimulationConstants::fixed_time_step;
-            n_pos[i] = NormalizePosition(prev_pos[i]) - VelocityXGridOffset[i];
+            n_pos[i] = NormalizePosition(prev_pos[i]) - ValueGridOffset[i];
         }
 
         d_temperature_temp[GridIndex(index_x, index_y, index_z, w)] =
-            TrilinearInterpolation(d_temperature, &GridIndex, n_pos[0], n_pos[1], n_pos[2], w);
+            TrilinearInterpolation<&ClampedGridIndex>(d_temperature, n_pos[0], n_pos[1], n_pos[2], w);
     }
 }
 
@@ -1777,24 +1829,21 @@ __global__ void AdvectVelocitiesX(uint32_t w) {
         n_pos[2] = static_cast<ValueType>(index_z) + VelocityXGridOffset[2];
 
         math::vec3<ValueType> velocity;
-        velocity[0] = TrilinearInterpolation(d_velocity_x,
-                                             &StaggeredGridXIndex,
-                                             n_pos[0] - VelocityXGridOffset[0],
-                                             n_pos[1] - VelocityXGridOffset[1],
-                                             n_pos[2] - VelocityXGridOffset[2],
-                                             w);
-        velocity[1] = TrilinearInterpolation(d_velocity_y,
-                                             &StaggeredGridYIndex,
-                                             n_pos[0] - VelocityYGridOffset[0],
-                                             n_pos[1] - VelocityYGridOffset[1],
-                                             n_pos[2] - VelocityYGridOffset[2],
-                                             w);
-        velocity[2] = TrilinearInterpolation(d_velocity_z,
-                                             &StaggeredGridZIndex,
-                                             n_pos[0] - VelocityZGridOffset[0],
-                                             n_pos[1] - VelocityZGridOffset[1],
-                                             n_pos[2] - VelocityZGridOffset[2],
-                                             w);
+        velocity[0] = TrilinearInterpolation<&ClampedStaggeredGridXIndex>(d_velocity_x,
+                                                                          n_pos[0] - VelocityXGridOffset[0],
+                                                                          n_pos[1] - VelocityXGridOffset[1],
+                                                                          n_pos[2] - VelocityXGridOffset[2],
+                                                                          w);
+        velocity[1] = TrilinearInterpolation<&ClampedStaggeredGridYIndex>(d_velocity_y,
+                                                                          n_pos[0] - VelocityYGridOffset[0],
+                                                                          n_pos[1] - VelocityYGridOffset[1],
+                                                                          n_pos[2] - VelocityYGridOffset[2],
+                                                                          w);
+        velocity[2] = TrilinearInterpolation<&ClampedStaggeredGridZIndex>(d_velocity_z,
+                                                                          n_pos[0] - VelocityZGridOffset[0],
+                                                                          n_pos[1] - VelocityZGridOffset[1],
+                                                                          n_pos[2] - VelocityZGridOffset[2],
+                                                                          w);
 
         for (size_t i = 0; i < 3; ++i) {
             prev_pos[i] = DenormalizePosition(n_pos[i]) - velocity[i] * SimulationConstants::fixed_time_step;
@@ -1802,7 +1851,7 @@ __global__ void AdvectVelocitiesX(uint32_t w) {
         }
 
         d_velocity_x_temp[StaggeredGridXIndex(index_x, index_y, index_z, w)] =
-            TrilinearInterpolation(d_velocity_x, &StaggeredGridXIndex, n_pos[0], n_pos[1], n_pos[2], w);
+            TrilinearInterpolation<&ClampedStaggeredGridXIndex>(d_velocity_x, n_pos[0], n_pos[1], n_pos[2], w);
     }
 }
 
@@ -1823,24 +1872,21 @@ __global__ void AdvectVelocitiesY(uint32_t w) {
         n_pos[2] = static_cast<ValueType>(index_z) + VelocityYGridOffset[2];
 
         math::vec3<ValueType> velocity;
-        velocity[0] = TrilinearInterpolation(d_velocity_x,
-                                             &StaggeredGridXIndex,
-                                             n_pos[0] - VelocityXGridOffset[0],
-                                             n_pos[1] - VelocityXGridOffset[1],
-                                             n_pos[2] - VelocityXGridOffset[2],
-                                             w);
-        velocity[1] = TrilinearInterpolation(d_velocity_y,
-                                             &StaggeredGridYIndex,
-                                             n_pos[0] - VelocityYGridOffset[0],
-                                             n_pos[1] - VelocityYGridOffset[1],
-                                             n_pos[2] - VelocityYGridOffset[2],
-                                             w);
-        velocity[2] = TrilinearInterpolation(d_velocity_z,
-                                             &StaggeredGridZIndex,
-                                             n_pos[0] - VelocityZGridOffset[0],
-                                             n_pos[1] - VelocityZGridOffset[1],
-                                             n_pos[2] - VelocityZGridOffset[2],
-                                             w);
+        velocity[0] = TrilinearInterpolation<&ClampedStaggeredGridXIndex>(d_velocity_x,
+                                                                          n_pos[0] - VelocityXGridOffset[0],
+                                                                          n_pos[1] - VelocityXGridOffset[1],
+                                                                          n_pos[2] - VelocityXGridOffset[2],
+                                                                          w);
+        velocity[1] = TrilinearInterpolation<&ClampedStaggeredGridYIndex>(d_velocity_y,
+                                                                          n_pos[0] - VelocityYGridOffset[0],
+                                                                          n_pos[1] - VelocityYGridOffset[1],
+                                                                          n_pos[2] - VelocityYGridOffset[2],
+                                                                          w);
+        velocity[2] = TrilinearInterpolation<&ClampedStaggeredGridZIndex>(d_velocity_z,
+                                                                          n_pos[0] - VelocityZGridOffset[0],
+                                                                          n_pos[1] - VelocityZGridOffset[1],
+                                                                          n_pos[2] - VelocityZGridOffset[2],
+                                                                          w);
 
         for (size_t i = 0; i < 3; ++i) {
             prev_pos[i] = DenormalizePosition(n_pos[i]) - velocity[i] * SimulationConstants::fixed_time_step;
@@ -1848,7 +1894,7 @@ __global__ void AdvectVelocitiesY(uint32_t w) {
         }
 
         d_velocity_y_temp[StaggeredGridYIndex(index_x, index_y, index_z, w)] =
-            TrilinearInterpolation(d_velocity_y, &StaggeredGridYIndex, n_pos[0], n_pos[1], n_pos[2], w);
+            TrilinearInterpolation<&ClampedStaggeredGridYIndex>(d_velocity_y, n_pos[0], n_pos[1], n_pos[2], w);
     }
 }
 
@@ -1867,24 +1913,21 @@ __global__ void AdvectVelocitiesZ(uint32_t w) {
         n_pos[2] = static_cast<ValueType>(index_z) + VelocityZGridOffset[2];
 
         math::vec3<ValueType> velocity;
-        velocity[0] = TrilinearInterpolation(d_velocity_x,
-                                             &StaggeredGridXIndex,
-                                             n_pos[0] - VelocityXGridOffset[0],
-                                             n_pos[1] - VelocityXGridOffset[1],
-                                             n_pos[2] - VelocityXGridOffset[2],
-                                             w);
-        velocity[1] = TrilinearInterpolation(d_velocity_y,
-                                             &StaggeredGridYIndex,
-                                             n_pos[0] - VelocityYGridOffset[0],
-                                             n_pos[1] - VelocityYGridOffset[1],
-                                             n_pos[2] - VelocityYGridOffset[2],
-                                             w);
-        velocity[2] = TrilinearInterpolation(d_velocity_z,
-                                             &StaggeredGridZIndex,
-                                             n_pos[0] - VelocityZGridOffset[0],
-                                             n_pos[1] - VelocityZGridOffset[1],
-                                             n_pos[2] - VelocityZGridOffset[2],
-                                             w);
+        velocity[0] = TrilinearInterpolation<&ClampedStaggeredGridXIndex>(d_velocity_x,
+                                                                          n_pos[0] - VelocityXGridOffset[0],
+                                                                          n_pos[1] - VelocityXGridOffset[1],
+                                                                          n_pos[2] - VelocityXGridOffset[2],
+                                                                          w);
+        velocity[1] = TrilinearInterpolation<&ClampedStaggeredGridYIndex>(d_velocity_y,
+                                                                          n_pos[0] - VelocityYGridOffset[0],
+                                                                          n_pos[1] - VelocityYGridOffset[1],
+                                                                          n_pos[2] - VelocityYGridOffset[2],
+                                                                          w);
+        velocity[2] = TrilinearInterpolation<&ClampedStaggeredGridZIndex>(d_velocity_z,
+                                                                          n_pos[0] - VelocityZGridOffset[0],
+                                                                          n_pos[1] - VelocityZGridOffset[1],
+                                                                          n_pos[2] - VelocityZGridOffset[2],
+                                                                          w);
 
         for (size_t i = 0; i < 3; ++i) {
             prev_pos[i] = DenormalizePosition(n_pos[i]) - velocity[i] * SimulationConstants::fixed_time_step;
@@ -1892,7 +1935,7 @@ __global__ void AdvectVelocitiesZ(uint32_t w) {
         }
 
         d_velocity_z_temp[StaggeredGridZIndex(index_x, index_y, index_z, w)] =
-            TrilinearInterpolation(d_velocity_z, &StaggeredGridZIndex, n_pos[0], n_pos[1], n_pos[2], w);
+            TrilinearInterpolation<&ClampedStaggeredGridZIndex>(d_velocity_z, n_pos[0], n_pos[1], n_pos[2], w);
     }
 }
 
@@ -2020,4 +2063,137 @@ cudaGraph_t CreateApplyBuoyancy() {
     }
 
     return graph;
+}
+
+struct CoordinateSystem {
+    size_t x;
+    size_t y;
+    size_t z;
+    bool inverse;
+};
+
+__device__ constexpr math::vec3<float> ConvertToFaceCS(const CoordinateSystem& cs, const math::vec3<float>& vec) {
+    // it is a reverse transformation
+    math::vec3<float> result{vec[2 - cs.z], vec[2 - cs.y], vec[2 - cs.x]};
+    return cs.inverse ? -result : result;
+}
+
+// Transforms coordinate system for each face
+//! Warning: 3-5 faces are in reverse handedness
+__device__ constexpr cuda::std::array<CoordinateSystem, 6> cube_face_cs{
+    CoordinateSystem{.x = 0, .y = 1, .z = 2, .inverse = false},
+    CoordinateSystem{.x = 1, .y = 2, .z = 0, .inverse = false},
+    CoordinateSystem{.x = 2, .y = 0, .z = 1, .inverse = false},
+    CoordinateSystem{.x = 0, .y = 1, .z = 2, .inverse = true},
+    CoordinateSystem{.x = 1, .y = 2, .z = 0, .inverse = true},
+    CoordinateSystem{.x = 2, .y = 0, .z = 1, .inverse = true}};
+
+__device__ math::vec3<float> ToWorldCoordinates(size_t face_index, const math::vec3<float>& pos) {
+    math::vec3<float> result{pos.x, pos.y, world_origin_offset[2]};
+    result /= result.magnitude() / (EulerFluidSim::inner_sphere_radius + pos.z);
+    return ConvertToFaceCS(cube_face_cs[face_index], result);
+}
+
+__device__ void CreateVelocityArrow(math::vec3<float>* out,
+                                    uint32_t arr_index,
+                                    math::vec3<float> start,
+                                    math::vec3<float> end,
+                                    float head_size) {
+    auto direction = end - start;
+    direction.normalize_safe();
+    // best_orthogonal causes flickering when plain is changing
+    // weighted average of 2 smallest axis will help, but it does have edge cases where arrow is almost axis aligned
+    auto orth = math::best_orthogonal(direction);
+
+    out[arr_index] = start;
+    out[arr_index + 1] = end;
+
+    out[arr_index + 2] = end;
+    out[arr_index + 3] = end + (direction * -head_size) + (orth * head_size);
+
+    out[arr_index + 4] = end;
+    out[arr_index + 5] = end + (direction * -head_size) + (orth * -head_size);
+}
+
+__global__ void
+FillInterpolatedVelocities(math::vec3<float>* out, uint32_t interpolation_points, uint32_t w, float head_size) {
+    const uint32_t sample_x = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t sample_y = blockIdx.y * blockDim.y + threadIdx.y;
+    const uint32_t sample_z = blockIdx.z * blockDim.z + threadIdx.z;
+
+    const math::vec3<uint32_t> cell{sample_x / interpolation_points,
+                                    sample_y / interpolation_points,
+                                    sample_z / interpolation_points};
+    const math::vec3<uint32_t> sub_sample{sample_x % interpolation_points,
+                                          sample_y % interpolation_points,
+                                          sample_z % interpolation_points};
+
+    const float sample_stride = 1.0f / static_cast<float>(interpolation_points);
+    const float sample_offset = sample_stride * 0.5f;
+
+    // result array: [cell][sub-sample][6 vertices]
+    auto arr_start_index =
+        GridIndex<SimulationDomain::real_dimensions>(cell.x, cell.y, cell.z, w) * 6 * math::cube(interpolation_points);
+    arr_start_index += 6 * (interpolation_points * interpolation_points * sub_sample.x +
+                            interpolation_points * sub_sample.y + sub_sample.z);
+
+    constexpr auto halo = static_cast<math::vec3<ValueType>>(SimulationDomain::halo_size);
+    auto n_pos = static_cast<math::vec3<ValueType>>(cell) + halo;
+    n_pos[0] += sample_offset + static_cast<float>(sub_sample.x) * sample_stride;
+    n_pos[1] += sample_offset + static_cast<float>(sub_sample.y) * sample_stride;
+    n_pos[2] += sample_offset + static_cast<float>(sub_sample.z) * sample_stride;
+
+    math::vec3<ValueType> velocity;
+    velocity.x = TrilinearInterpolation<&ClampedStaggeredGridXIndex>(
+        d_velocity_x,
+        n_pos - static_cast<math::vec3<ValueType>>(VelocityXGridOffset),
+        w);
+    velocity.y = TrilinearInterpolation<&ClampedStaggeredGridYIndex>(
+        d_velocity_y,
+        n_pos - static_cast<math::vec3<ValueType>>(VelocityYGridOffset),
+        w);
+    velocity.z = TrilinearInterpolation<&ClampedStaggeredGridZIndex>(
+        d_velocity_z,
+        n_pos - static_cast<math::vec3<ValueType>>(VelocityZGridOffset),
+        w);
+    velocity /= static_cast<ValueType>(interpolation_points);
+
+    constexpr auto offset =
+        math::vec3<float>{EulerFluidSim::world_origin_offset[0], EulerFluidSim::world_origin_offset[1], 0.0f};
+    n_pos = DenormalizePosition(n_pos - halo) + static_cast<math::vec3<ValueType>>(offset);
+    velocity = DenormalizePosition(velocity);
+
+    CreateVelocityArrow(out,
+                        arr_start_index,
+                        ToWorldCoordinates(w, static_cast<math::vec3<float>>(n_pos)),
+                        ToWorldCoordinates(w, static_cast<math::vec3<float>>(n_pos + velocity)),
+                        head_size * velocity.magnitude());
+}
+
+void DrawFillInterpolatedVelocities(cudaGraphicsResource* velocities_resource,
+                                    uint32_t interpolation_points,
+                                    float head_size,
+                                    cudaStream_t stream) {
+    const dim3 grid{
+        static_cast<uint32_t>(SimulationDomain::real_dimensions[0]) * interpolation_points / block_dimensions.x,
+        static_cast<uint32_t>(SimulationDomain::real_dimensions[1]) * interpolation_points / block_dimensions.y,
+        static_cast<uint32_t>(SimulationDomain::real_dimensions[2]) * interpolation_points / block_dimensions.z};
+
+    cudaGraphicsMapResources(1, &velocities_resource, stream);
+    math::vec3<float>* out = nullptr;
+    size_t out_size = 0;
+    cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(&out), &out_size, velocities_resource);
+    assert(out_size >= EulerFluidSim::domains * Cardinality(SimulationDomain::real_dimensions) *
+                           math::cube<size_t>(interpolation_points) * 6 * sizeof(math::vec3<float>) &&
+           "velocity arrow buffer is too small for this sample count");
+
+    for (size_t i = 0; i < EulerFluidSim::domains; ++i) {
+        FillInterpolatedVelocities<<<grid, block_dimensions, 0, stream>>>(out, interpolation_points, i, head_size);
+    }
+
+    cudaGraphicsUnmapResources(1, &velocities_resource, stream);
+    {
+        auto err = cudaGetLastError();
+        assert(err == cudaSuccess);
+    }
 }

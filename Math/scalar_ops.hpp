@@ -2,6 +2,7 @@
 
 #include "constants.hpp"
 
+#include <Utils/cuda_def.hpp>
 #include <random>
 
 namespace math {
@@ -16,22 +17,22 @@ namespace math {
     }
 
     template <typename T>
-    T square(T val) {
+    HD_DEF constexpr T square(T val) {
         return val * val;
     }
 
     template <typename T>
-    T cube(T val) {
+    HD_DEF constexpr T cube(T val) {
         return val * val * val;
     }
 
     template <typename T>
-    T to_radians(T val) {
+    HD_DEF constexpr T to_radians(T val) {
         return val * constants::PI<T> / T{180};
     }
 
     template <typename T>
-    T to_degrees(T val) {
+    HD_DEF constexpr T to_degrees(T val) {
         return val * T{180} / constants::PI<T>;
     }
 
@@ -46,7 +47,7 @@ namespace math {
     }
 
     template <typename T>
-    T lerp(T a, T b, float t) {
+    HD_DEF constexpr T lerp(T a, T b, float t) {
         return a * (1 - t) + b * t;
     }
 

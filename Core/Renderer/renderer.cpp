@@ -368,6 +368,40 @@ namespace Core {
         }
     }
 
+    void RenderPipeline::DebugDrawLines(Engine::Assets::SColor color, VertexBufferObject& lines, size_t point_count) {
+        using namespace Core::Engine::Assets;
+        // Debug draw always uses default unlit variance
+        static const ShaderGenerator::Unlit::ShaderVariance variance{};
+
+        // This will cause stater on the first call
+        // TODO: Setup all required variants in initialization
+        CreateUnlitShaderVariant(variance);
+        const auto& program = unlit_programs_.BindVariant(variance);
+        bounded_program_id_ = program.ProgramId();
+
+        VAO_.Bind();
+        Reset();
+        lines.Bind();
+        bounded_attributes_count_ = 1;
+
+        SetBlendingMode(BlendMode::Transparent);
+        SetFaceCulling(FaceCulling::None);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+
+        SetModelMatrix(math::mat4x4<float>::identity());
+
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+
+        Color base_color = FromSColor(color);
+        GLint uniform_color = glGetUniformLocation(bounded_program_id_, "base_color");
+        assert(uniform_color >= 0 && "glGetUniformLocation did not find a value by name");
+        glUniform4f(uniform_color, base_color.r, base_color.g, base_color.b, base_color.a);
+
+        glDrawArrays(GL_LINES, 0, point_count);
+        VAO_.Unbind();
+    }
+
     void RenderPipeline::DebugDrawAll() {
         using namespace Core::Engine::Assets;
         // Debug draw always uses default unlit variance

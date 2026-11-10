@@ -6,9 +6,9 @@
 #include <cmath>
 #include <cstring>
 
-#include <Utils/cuda_def.hpp>
 #include <Utils/hash.hpp>
 #include <cuda/std/array>
+#include <cuda/std/cmath>
 
 namespace math::impl {
 
@@ -227,42 +227,46 @@ namespace math::impl {
     }
 
     template <typename T, size_t Dimensions>
-    auto vector<T, Dimensions>::begin() noexcept -> typename cuda::std::array<T, Dimensions>::iterator {
+    HD_DEF auto vector<T, Dimensions>::begin() noexcept -> typename cuda::std::array<T, Dimensions>::iterator {
         return vector_storage<T, Dimensions>::arr.begin();
     }
 
     template <typename T, size_t Dimensions>
-    auto vector<T, Dimensions>::end() noexcept -> typename cuda::std::array<T, Dimensions>::iterator {
+    HD_DEF auto vector<T, Dimensions>::end() noexcept -> typename cuda::std::array<T, Dimensions>::iterator {
         return vector_storage<T, Dimensions>::arr.end();
     }
 
     template <typename T, size_t Dimensions>
-    auto vector<T, Dimensions>::begin() const noexcept -> typename cuda::std::array<T, Dimensions>::const_iterator {
+    HD_DEF auto vector<T, Dimensions>::begin() const noexcept ->
+        typename cuda::std::array<T, Dimensions>::const_iterator {
         return vector_storage<T, Dimensions>::arr.begin();
     }
 
     template <typename T, size_t Dimensions>
-    auto vector<T, Dimensions>::end() const noexcept -> typename cuda::std::array<T, Dimensions>::const_iterator {
+    HD_DEF auto vector<T, Dimensions>::end() const noexcept ->
+        typename cuda::std::array<T, Dimensions>::const_iterator {
         return vector_storage<T, Dimensions>::arr.end();
     }
 
     template <typename T, size_t Dimensions>
-    auto vector<T, Dimensions>::cbegin() const noexcept -> typename cuda::std::array<T, Dimensions>::const_iterator {
+    HD_DEF auto vector<T, Dimensions>::cbegin() const noexcept ->
+        typename cuda::std::array<T, Dimensions>::const_iterator {
         return vector_storage<T, Dimensions>::arr.cbegin();
     }
 
     template <typename T, size_t Dimensions>
-    auto vector<T, Dimensions>::cend() const noexcept -> typename cuda::std::array<T, Dimensions>::const_iterator {
+    HD_DEF auto vector<T, Dimensions>::cend() const noexcept ->
+        typename cuda::std::array<T, Dimensions>::const_iterator {
         return vector_storage<T, Dimensions>::arr.cend();
     }
 
     template <typename T, size_t Dimensions>
-    T vector<T, Dimensions>::magnitude() const noexcept {
-        return std::sqrt(magnitude_sqr());
+    HD_DEF T vector<T, Dimensions>::magnitude() const noexcept {
+        return cuda::std::sqrt(magnitude_sqr());
     }
 
     template <typename T, size_t Dimensions>
-    constexpr T vector<T, Dimensions>::magnitude_sqr() const noexcept {
+    HD_DEF constexpr T vector<T, Dimensions>::magnitude_sqr() const noexcept {
         T result{0};
         for (size_t i = 0; i < Dimensions; ++i) {
             result += this->operator[](i) * this->operator[](i);
@@ -271,7 +275,7 @@ namespace math::impl {
     }
 
     template <typename T, size_t Dimensions>
-    vector<T, Dimensions>& vector<T, Dimensions>::normalize() noexcept {
+    HD_DEF vector<T, Dimensions>& vector<T, Dimensions>::normalize() noexcept {
         auto mag = magnitude();
         assert(mag != T{0} && "division by zero in unsafe vector::normalize()");
         for (size_t i = 0; i < Dimensions; ++i) {
@@ -281,7 +285,7 @@ namespace math::impl {
     }
 
     template <typename T, size_t Dimensions>
-    vector<T, Dimensions>& vector<T, Dimensions>::normalize_safe() noexcept {
+    HD_DEF vector<T, Dimensions>& vector<T, Dimensions>::normalize_safe() noexcept {
         auto mag = magnitude();
         if (mag != T{0}) {
             for (size_t i = 0; i < Dimensions; ++i) {

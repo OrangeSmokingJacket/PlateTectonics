@@ -45,8 +45,6 @@ namespace Core {
             assert(glGetError() == GL_NO_ERROR);
             main_window_.Update();
         }
-
-        glfwTerminate();
     }
 
     void Application::Stop() { run_main_loop_ = false; }

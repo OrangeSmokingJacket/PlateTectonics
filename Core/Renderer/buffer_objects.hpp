@@ -103,6 +103,7 @@ namespace Core {
         BufferObject& operator=(BufferObject&&) noexcept;
         ~BufferObject();
 
+        GLuint Id() const noexcept;
         void Bind();
         void BindBase(uint32_t index);
         static void Unbind();
@@ -211,6 +212,11 @@ namespace Core {
         if (id_ != GL_INVALID_INDEX) {
             glDeleteBuffers(1, &id_);
         }
+    }
+
+    template <BufferObjectType T>
+    GLuint BufferObject<T>::Id() const noexcept {
+        return id_;
     }
 
     template <BufferObjectType T>

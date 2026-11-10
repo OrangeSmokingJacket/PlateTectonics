@@ -45,6 +45,7 @@ namespace Core {
 
         // Debug pass
         void ReserveLineSpace(Engine::Assets::SColor color, size_t count, bool persistent);
+        void DebugDrawLines(Engine::Assets::SColor color, VertexBufferObject& lines, size_t lines_count);
         void DebugDrawAll();
         void DebugDrawBox(const math::vec3<float>& center,
                           const math::vec3<float>& extent,
